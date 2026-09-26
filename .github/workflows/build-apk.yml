@@ -59,3 +59,5 @@ jobs:
           name: SelfDiscipline-debug-apk-v6.1
           path: SelfDisciplineAndroid/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+# V6.1 rebuild after service compile fix
