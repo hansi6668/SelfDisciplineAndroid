@@ -320,7 +320,12 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
                     .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                     .build()
             )
-            mp.setDataSource(this, Uri.parse(uriString))
+            val soundUri = Uri.parse(uriString)
+            if (soundUri.scheme == "file") {
+                mp.setDataSource(soundUri.path ?: return)
+            } else {
+                mp.setDataSource(this, soundUri)
+            }
             mp.setOnPreparedListener { prepared ->
                 if (player === prepared) {
                     try { prepared.start() } catch (_: Exception) { }
