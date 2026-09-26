@@ -310,6 +310,7 @@ class MainActivity : Activity() {
         when (AppPrefs.mode(this, app.packageName)) {
             AppPrefs.Mode.OFF -> off.isChecked = true
             AppPrefs.Mode.BLOCK -> block.isChecked = true
+            AppPrefs.Mode.WELCOME -> off.isChecked = true
         }
         updateModeBadge(modeBadge, AppPrefs.mode(this, app.packageName))
         group.setOnCheckedChangeListener { _, checkedId ->
