@@ -50,6 +50,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val pkg = event?.packageName?.toString() ?: return
 
+        // 用户主动打开“自律一下”时，立即关闭当前提示和音乐。
         if (pkg == packageName) {
             stopPromptNow()
             currentPackage = pkg
@@ -59,24 +60,18 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         val now = System.currentTimeMillis()
         val homePackage = resolveHomePackage()
 
-        // 拦截应用执行 GLOBAL_ACTION_HOME 后，系统会紧接着发送桌面事件。
-        // 此时必须忽略该桌面事件，否则会把刚显示的拦截页和音乐立即关掉。
+        // 拦截后执行 GLOBAL_ACTION_HOME 会产生桌面事件。
+        // 这个事件不能被当成“离开被拦截应用”，否则刚弹出的拦截页会立即消失。
         if (protectedBlockPackage != null && pkg == homePackage) {
             return
         }
 
-        if (pkg == currentPackage && now - lastEventAt < 250) return
+        // 同一个应用短时间内会连续收到多个无障碍事件，只处理一次。
+        if (pkg == currentPackage && now - lastEventAt < 700) return
 
         currentPackage = pkg
         lastEventAt = now
-
-        // 给前台窗口切换留出极短的稳定时间，减少 Android 不同机型上的竞态。
-        val delay = if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) 60L else 120L
-        handler.postDelayed({
-            if (currentPackage == pkg) {
-                evaluatePackage(pkg)
-            }
-        }, delay)
+        evaluatePackage(pkg)
     }
 
     override fun onInterrupt() = Unit
@@ -99,10 +94,11 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
                 removeOverlay()
                 stopSound()
 
-                // 先回桌面，再保持拦截状态；后续桌面事件由 onAccessibilityEvent 忽略。
-                performGlobalAction(GLOBAL_ACTION_HOME)
+                // 立即显示拦截页和声音，再把原应用送回桌面。
+                // 桌面事件会被 protectedBlockPackage 拦截掉，不会关闭提示。
                 showBlockingOverlay(pkg)
                 playSound(AppPrefs.blockSound(this))
+                performGlobalAction(GLOBAL_ACTION_HOME)
             }
 
             AppPrefs.Mode.WELCOME -> {
