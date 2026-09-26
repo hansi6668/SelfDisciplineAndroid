@@ -153,7 +153,6 @@ class MainActivity : Activity() {
         outer.addView(top)
         val stats = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(14), 0, 0) }
         stats.addView(statTile("拦截", "0", primary).also { blockedStat = it }, lp(0, dp(64), 0, 0).apply { weight = 1f })
-        stats.addView(statTile("鼓励", "0", success).also { welcomeStat = it }, lp(0, dp(64), 7, 0).apply { weight = 1f })
         stats.addView(statTile("应用", "0", Color.rgb(120, 91, 197)).also { totalStat = it }, lp(0, dp(64), 7, 0).apply { weight = 1f })
         outer.addView(stats)
         return outer
@@ -200,7 +199,7 @@ class MainActivity : Activity() {
             text = soundName(uri); textSize = 12f; setTextColor(textSecondary); maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
         }
-        if (requestCode == pickBlockSound) blockSoundSummary = summary else welcomeSoundSummary = summary
+        if (requestCode == pickBlockSound) blockSoundSummary = summary
         textBox.addView(summary)
         textBox.addView(textView(desc, 12f, Color.rgb(135, 140, 150), 4, 0))
         box.addView(textBox, LinearLayout.LayoutParams(0, -2, 1f))
@@ -307,8 +306,7 @@ class MainActivity : Activity() {
         }
         val off = radio("关闭", Color.rgb(104, 111, 124))
         val block = radio("拦截", primary)
-        val welcome = radio("鼓励", success)
-        group.addView(off, weightLp()); group.addView(block, weightLp()); group.addView(welcome, weightLp())
+        group.addView(off, weightLp()); group.addView(block, weightLp())
         when (AppPrefs.mode(this, app.packageName)) {
             AppPrefs.Mode.OFF -> off.isChecked = true
             AppPrefs.Mode.BLOCK -> block.isChecked = true
@@ -328,7 +326,7 @@ class MainActivity : Activity() {
     private fun modeDescription(mode: AppPrefs.Mode): String = when (mode) {
         AppPrefs.Mode.OFF -> "不提示，不干预"
         AppPrefs.Mode.BLOCK -> "打开时提醒并拦截"
-        AppPrefs.Mode.WELCOME -> "打开时欢迎并鼓励"
+        AppPrefs.Mode.WELCOME -> "已停用"
     }
 
     private fun updateStats(apps: List<AppItem>) {
@@ -359,7 +357,7 @@ class MainActivity : Activity() {
         when (mode) {
             AppPrefs.Mode.OFF -> { badge.text = "关闭"; badge.setTextColor(textSecondary); badge.background = rounded(Color.rgb(241, 243, 247), dp(18)) }
             AppPrefs.Mode.BLOCK -> { badge.text = "拦截"; badge.setTextColor(primary); badge.background = rounded(Color.rgb(235, 240, 255), dp(18)) }
-            AppPrefs.Mode.WELCOME -> { badge.text = "鼓励"; badge.setTextColor(success); badge.background = rounded(Color.rgb(235, 249, 241), dp(18)) }
+            AppPrefs.Mode.WELCOME -> { badge.text = "已停用"; badge.setTextColor(textSecondary); badge.background = rounded(Color.rgb(243, 245, 249), dp(18)) }
         }
     }
 
