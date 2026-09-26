@@ -146,19 +146,6 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun resolveHomePackage(): String? {
-        return try {
-            packageManager.resolveActivity(
-                android.content.Intent(android.content.Intent.ACTION_MAIN).addCategory(
-                    android.content.Intent.CATEGORY_HOME
-                ),
-                android.content.pm.PackageManager.MATCH_DEFAULT_ONLY
-            )?.activityInfo?.packageName
-        } catch (_: Exception) {
-            null
-        }
-    }
-
     private fun showBlockingOverlay(pkg: String) {
         removeOverlay()
         val root = LinearLayout(this).apply {
