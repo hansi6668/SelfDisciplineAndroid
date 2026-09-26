@@ -43,6 +43,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
     private var protectedBlockPackage: String? = null
     private var audioFocusRequest: AudioFocusRequest? = null
     private var melodyTrack: AudioTrack? = null
+    private var welcomedPackage: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -72,24 +73,24 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         val pkg = resolveEventPackage(event) ?: return
         val homePackage = resolveHomePackage()
 
-        // 拦截页显示期间保持锁定状态，不受 HOME、SystemUI 或其他事件影响。
+        // 拦截页出现期间保持锁定状态，不受任何系统窗口事件影响。
         if (protectedBlockPackage != null) {
             return
         }
 
-        // 本应用自己的 Activity / Accessibility Overlay 不参与前台应用判定。
+        // 本应用自己的 Activity / Accessibility Overlay 不参与前台判定。
         if (pkg == packageName) {
             return
         }
 
-        // 真正回到桌面，代表用户已经离开上一个目标应用。
-        // 这里只清空当前目标，不触发任何提示。
+        // 回到桌面表示真正离开目标 App；允许下次重新触发鼓励/拦截。
         if (homePackage != null && pkg == homePackage) {
             currentPackage = null
+            welcomedPackage = null
             return
         }
 
-        // 系统 UI、权限弹窗等短暂窗口不应该让目标应用失去“当前”状态。
+        // Android/SystemUI 等短暂系统窗口不改变当前真实应用。
         if (pkg == "android" ||
             pkg == "com.android.systemui" ||
             pkg == "com.google.android.permissioncontroller" ||
@@ -97,7 +98,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
             return
         }
 
-        // 同一个真实应用持续运行期间，只处理第一次进入。
+        // 同一个真实应用持续使用期间，只处理一次。
         if (pkg == currentPackage) {
             return
         }
@@ -137,6 +138,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
                 }
 
                 protectedBlockPackage = pkg
+                welcomedPackage = null
                 showBlockingOverlay(pkg)
                 playSound(AppPrefs.blockSound(this), true)
                 performGlobalAction(GLOBAL_ACTION_HOME)
@@ -144,6 +146,10 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
 
             AppPrefs.Mode.WELCOME -> {
                 protectedBlockPackage = null
+                if (welcomedPackage == pkg && currentOverlay != null) {
+                    return
+                }
+                welcomedPackage = pkg
                 showWelcomeOverlay()
                 playSound(AppPrefs.welcomeSound(this), false)
             }
@@ -288,7 +294,9 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         val type = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
         val flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
             WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-            WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+            WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             if (blocking) WindowManager.LayoutParams.MATCH_PARENT else WindowManager.LayoutParams.WRAP_CONTENT,
@@ -464,7 +472,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
                 .build()
 
             if (android.os.Build.VERSION.SDK_INT >= 26) {
-                val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
                     .setAudioAttributes(attrs)
                     .setAcceptsDelayedFocusGain(false)
                     .build()
@@ -475,7 +483,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
                 audioManager.requestAudioFocus(
                     null,
                     AudioManager.STREAM_MUSIC,
-                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
                 )
             }
         } catch (_: Exception) { }
