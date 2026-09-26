@@ -72,14 +72,15 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val type = event?.eventType ?: return
         if (type != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
-            type != AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
+            type != AccessibilityEvent.TYPE_WINDOWS_CHANGED &&
+            type != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
             return
         }
 
         val pkg = resolveEventPackage(event) ?: return
         val homePackage = resolveHomePackage()
 
-        // 拦截模式不做“同包去重”：只要目标 App 成为前台且拦截层不存在，就立即恢复。
+        // 已经进入拦截状态时，只允许拦截目标 App 的“前台回归”来恢复悬浮层。
         if (protectedBlockPackage != null) {
             if (pkg == protectedBlockPackage &&
                 (currentOverlay == null || !currentOverlay!!.isAttachedToWindow)) {
@@ -95,19 +96,14 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
             return
         }
 
-        // 自律一下自己的界面不触发规则。
-        if (pkg == packageName) {
-            return
-        }
+        if (pkg == packageName) return
 
-        // 回到桌面后允许下一次重新触发。
         if (homePackage != null && pkg == homePackage) {
             currentPackage = null
             welcomedPackage = null
             return
         }
 
-        // 系统窗口不改变当前真实 App。
         if (pkg == "android" ||
             pkg == "com.android.systemui" ||
             pkg == "com.google.android.permissioncontroller" ||
@@ -117,13 +113,13 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
 
         val mode = AppPrefs.mode(this, pkg)
 
+        // 拦截不采用 currentPackage 去重，只要目标 App 前台且没有拦截层就触发。
         if (mode == AppPrefs.Mode.BLOCK) {
             if (tempAllowedPackage == pkg &&
                 System.currentTimeMillis() < tempAllowedUntil) {
                 return
             }
 
-            // 只要拦截层不存在，就认为这次进入需要拦截。
             if (currentOverlay == null || !currentOverlay!!.isAttachedToWindow) {
                 stopSound()
                 protectedBlockPackage = pkg
@@ -135,7 +131,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
             return
         }
 
-        // 鼓励只在从其他 App 切换进来时触发一次。
+        // 鼓励保持去重，同一个 App 在前台期间只提示一次。
         if (pkg == currentPackage) return
 
         stopPromptNow()
@@ -143,15 +139,36 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         evaluatePackage(pkg)
     }
 
+    private fun resolveEventPackage(event: AccessibilityEvent?): String? {
+        val direct = event?.packageName?.toString()?.takeIf { it.isNotBlank() && it != "android" }
+        if (direct != null) return direct
+
+        return try {
+            rootInActiveWindow?.packageName?.toString()?.takeIf {
+                it.isNotBlank() && it != "android"
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    override fun onInterrupt() = Unit
+
+    override fun onDestroy() {
+        stopPromptNow()
+        if (activeInstance === this) activeInstance = null
+        super.onDestroy()
+    }
+
     private fun evaluatePackage(pkg: String) {
         when (AppPrefs.mode(this, pkg)) {
             AppPrefs.Mode.BLOCK -> {
-                if (tempAllowedPackage == pkg &&
-                    System.currentTimeMillis() < tempAllowedUntil) {
+                if (tempAllowedPackage == pkg && System.currentTimeMillis() < tempAllowedUntil) {
                     return
                 }
 
                 protectedBlockPackage = pkg
+                welcomedPackage = null
                 showBlockingOverlay(pkg)
                 playSound(AppPrefs.blockSound(this), true)
                 performGlobalAction(GLOBAL_ACTION_HOME)
@@ -159,6 +176,9 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
 
             AppPrefs.Mode.WELCOME -> {
                 protectedBlockPackage = null
+                if (welcomedPackage == pkg && currentOverlay != null) {
+                    return
+                }
                 welcomedPackage = pkg
                 showWelcomeOverlay()
                 playSound(AppPrefs.welcomeSound(this), false)
@@ -169,3 +189,371 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
     }
 
 
+    private fun resolveHomePackage(): String? {
+        return try {
+            packageManager.resolveActivity(
+                android.content.Intent(android.content.Intent.ACTION_MAIN).addCategory(
+                    android.content.Intent.CATEGORY_HOME
+                ),
+                android.content.pm.PackageManager.MATCH_DEFAULT_ONLY
+            )?.activityInfo?.packageName
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun showBlockingOverlay(pkg: String) {
+        removeOverlay()
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(28), dp(28), dp(28), dp(28))
+            background = roundedBackground(Color.argb(250, 249, 250, 253), dp(28))
+            isClickable = true
+        }
+        root.addView(TextView(this).apply {
+            text = "自律提醒"
+            textSize = 13f
+            setTextColor(Color.rgb(54, 92, 245))
+            gravity = Gravity.CENTER
+            typeface = Typeface.DEFAULT_BOLD
+            background = roundedBackground(Color.rgb(235, 240, 255), dp(30))
+            setPadding(dp(14), dp(7), dp(14), dp(7))
+        }, centeredLp(-2, -2, 0, 14))
+        root.addView(TextView(this).apply {
+            text = "先停一下"
+            textSize = 30f
+            setTextColor(Color.rgb(24, 28, 38))
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+        }, lp(-1, -2, 0, 10))
+        root.addView(TextView(this).apply {
+            text = AppPrefs.blockMessage(this@SelfDisciplineAccessibilityService)
+            textSize = 18f
+            setLineSpacing(0f, 1.15f)
+            setTextColor(Color.rgb(74, 79, 91))
+            gravity = Gravity.CENTER
+        }, lp(-1, -2, 0, 22))
+        root.addView(TextView(this).apply {
+            text = "给自己几秒钟，重新决定现在最重要的事。"
+            textSize = 13f
+            setTextColor(Color.rgb(128, 133, 145))
+            gravity = Gravity.CENTER
+        }, lp(-1, -2, 0, 20))
+        root.addView(actionButton("回到桌面", Color.rgb(54, 92, 245), true).apply {
+            setOnClickListener {
+                stopPromptNow()
+                performGlobalAction(GLOBAL_ACTION_HOME)
+            }
+        }, lp(-1, dp(52), 0, 10))
+        root.addView(actionButton("我确定，进入 5 分钟", Color.TRANSPARENT, false).apply {
+            setTextColor(Color.rgb(54, 92, 245))
+            setOnClickListener {
+                stopPromptNow()
+                tempAllowedPackage = pkg
+                tempAllowedUntil = System.currentTimeMillis() + 5 * 60 * 1000L
+                openPackage(pkg)
+            }
+        }, lp(-1, dp(52), 0, 0))
+        addOverlay(root, true)
+    }
+
+    private fun showWelcomeOverlay() {
+        removeOverlay()
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(12), dp(6), dp(12))
+            background = roundedBackground(Color.rgb(236, 250, 243), dp(22), Color.rgb(202, 237, 215))
+            isClickable = true
+            isFocusable = true
+        }
+
+        root.addView(TextView(this).apply {
+            text = "✓"
+            textSize = 20f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.rgb(45, 157, 99))
+            gravity = Gravity.CENTER
+            background = roundedBackground(Color.WHITE, dp(18))
+        }, lp(dp(38), dp(38), 0, 0))
+
+        root.addView(TextView(this).apply {
+            text = AppPrefs.welcomeMessage(this@SelfDisciplineAccessibilityService)
+            textSize = 16f
+            setLineSpacing(0f, 1.08f)
+            setTextColor(Color.rgb(35, 90, 58))
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(12), 0, dp(8), 0)
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+
+        root.addView(Button(this).apply {
+            text = "×"
+            textSize = 22f
+            isAllCaps = false
+            minWidth = 0
+            minHeight = 0
+            setPadding(0, 0, 0, 0)
+            setTextColor(Color.rgb(55, 105, 75))
+            background = roundedBackground(Color.TRANSPARENT, dp(18))
+            setOnClickListener { stopPromptNow() }
+        }, lp(dp(42), dp(42), 0, 0))
+
+        addOverlay(root, false)
+
+        handler.postDelayed({
+            if (currentOverlay === root) {
+                stopPromptNow()
+            }
+        }, 2500)
+    }
+
+    private fun actionButton(text: String, color: Int, filled: Boolean): Button = Button(this).apply {
+        this.text = text
+        isAllCaps = false
+        textSize = 16f
+        typeface = Typeface.DEFAULT_BOLD
+        minHeight = 0
+        stateListAnimator = null
+        background = if (filled) roundedBackground(color, dp(18))
+        else roundedBackground(Color.TRANSPARENT, dp(18), Color.rgb(218, 222, 231))
+    }
+
+    private fun addOverlay(view: View, blocking: Boolean) {
+        val type = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+        val flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+            WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            if (blocking) WindowManager.LayoutParams.MATCH_PARENT else WindowManager.LayoutParams.WRAP_CONTENT,
+            type, flags, android.graphics.PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = if (blocking) Gravity.CENTER else Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            y = if (blocking) 0 else dp(72)
+        }
+        try {
+            windowManager?.addView(view, params)
+            currentOverlay = view
+        } catch (_: Exception) {
+            currentOverlay = null
+        }
+    }
+
+    private fun removeOverlay() {
+        currentOverlay?.let {
+            try { windowManager?.removeView(it) } catch (_: Exception) { }
+        }
+        currentOverlay = null
+    }
+
+    private fun stopPromptNow() {
+        handler.removeCallbacksAndMessages(null)
+        removeOverlay()
+        stopSound()
+        protectedBlockPackage = null
+    }
+
+    private fun openPackage(pkg: String) {
+        val launchIntent = packageManager.getLaunchIntentForPackage(pkg) ?: return
+        launchIntent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        try { startActivity(launchIntent) } catch (_: Exception) { }
+    }
+
+    private fun playSound(uriString: String?, loop: Boolean) {
+        stopSound()
+        requestAudioFocus()
+
+        if (uriString.isNullOrBlank()) {
+            playFallbackMelody(loop)
+            return
+        }
+
+        try {
+            val soundUri = Uri.parse(uriString)
+            val mp = if (soundUri.scheme == "file") {
+                val path = soundUri.path ?: throw IllegalArgumentException("audio path is empty")
+                MediaPlayer().apply {
+                    setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                            .build()
+                    )
+                    setVolume(1.0f, 1.0f)
+                    isLooping = loop
+                    setDataSource(path)
+                    prepare()
+                }
+            } else {
+                MediaPlayer.create(this, soundUri)
+                    ?: throw IllegalStateException("MediaPlayer.create returned null")
+            }
+
+            mp.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
+            mp.setVolume(1.0f, 1.0f)
+            mp.isLooping = loop
+            mp.setOnCompletionListener { completed ->
+                if (player === completed) player = null
+                try { completed.release() } catch (_: Exception) { }
+                if (!loop) abandonAudioFocus()
+            }
+            mp.setOnErrorListener { failed, _, _ ->
+                if (player === failed) player = null
+                try { failed.release() } catch (_: Exception) { }
+                playFallbackMelody(loop)
+                true
+            }
+
+            player = mp
+            mp.start()
+        } catch (_: Exception) {
+            player = null
+            playFallbackMelody(loop)
+        }
+    }
+
+    private fun playFallbackMelody(loop: Boolean) {
+        stopMelodyOnly()
+        try {
+            val sampleRate = 22050
+            val notes = doubleArrayOf(523.25, 659.25, 783.99, 659.25, 587.33, 698.46, 880.0, 783.99)
+            val noteSamples = sampleRate / 5
+            val buffer = ShortArray(noteSamples * notes.size)
+
+            var pos = 0
+            for (freq in notes) {
+                for (i in 0 until noteSamples) {
+                    val t = i.toDouble() / sampleRate
+                    val attack = sampleRate * 0.02
+                    val release = sampleRate * 0.03
+                    val envelope = when {
+                        i < attack -> i / attack
+                        i > noteSamples - release -> (noteSamples - i) / release
+                        else -> 1.0
+                    }.coerceIn(0.0, 1.0)
+                    buffer[pos++] = (sin(2.0 * PI * freq * t) * 11000.0 * envelope).toInt().toShort()
+                }
+            }
+
+            val track = AudioTrack(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build(),
+                AudioFormat.Builder()
+                    .setSampleRate(sampleRate)
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build(),
+                buffer.size * 2,
+                AudioTrack.MODE_STATIC,
+                AudioManager.AUDIO_SESSION_ID_GENERATE
+            )
+
+            melodyTrack = track
+            track.setVolume(1.0f)
+            track.write(buffer, 0, buffer.size)
+            if (loop) {
+                track.setLoopPoints(0, buffer.size, -1)
+            } else {
+                track.setNotificationMarkerPosition(buffer.size)
+                track.setPlaybackPositionUpdateListener(object : AudioTrack.OnPlaybackPositionUpdateListener {
+                    override fun onMarkerReached(audioTrack: AudioTrack) {
+                        stopMelodyOnly()
+                        abandonAudioFocus()
+                    }
+                    override fun onPeriodicNotification(audioTrack: AudioTrack) = Unit
+                })
+            }
+            track.play()
+        } catch (_: Exception) {
+            melodyTrack = null
+            try {
+                tone = ToneGenerator(AudioManager.STREAM_MUSIC, 90).also {
+                    it.startTone(ToneGenerator.TONE_PROP_BEEP2, 500)
+                }
+            } catch (_: Exception) {
+                tone = null
+            }
+        }
+    }
+
+    private fun stopMelodyOnly() {
+        try { melodyTrack?.stop() } catch (_: Exception) { }
+        try { melodyTrack?.release() } catch (_: Exception) { }
+        melodyTrack = null
+    }
+
+    private fun requestAudioFocus() {
+        try {
+            val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+            val attrs = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                .build()
+
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                    .setAudioAttributes(attrs)
+                    .setAcceptsDelayedFocusGain(false)
+                    .build()
+                audioFocusRequest = request
+                audioManager.requestAudioFocus(request)
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.requestAudioFocus(
+                    null,
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
+                )
+            }
+        } catch (_: Exception) { }
+    }
+
+    private fun abandonAudioFocus() {
+        try {
+            val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+                audioFocusRequest = null
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.abandonAudioFocus(null)
+            }
+        } catch (_: Exception) { }
+    }
+
+    private fun stopSound() {
+        try { player?.stop() } catch (_: Exception) { }
+        try { player?.release() } catch (_: Exception) { }
+        player = null
+        try { tone?.release() } catch (_: Exception) { }
+        tone = null
+        stopMelodyOnly()
+        abandonAudioFocus()
+    }
+
+    private fun roundedBackground(fill: Int, radius: Int, strokeColor: Int? = null): GradientDrawable = GradientDrawable().apply {
+        setColor(fill)
+        cornerRadius = radius.toFloat()
+        if (strokeColor != null) setStroke(dp(1), strokeColor)
+    }
+
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    private fun centeredLp(w: Int, h: Int, top: Int, bottom: Int): LinearLayout.LayoutParams =
+        lp(w, h, top, bottom).apply { gravity = Gravity.CENTER_HORIZONTAL }
+
+    private fun lp(w: Int, h: Int, top: Int, bottom: Int): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(w, h).apply { topMargin = dp(top); bottomMargin = dp(bottom) }
+
+}
