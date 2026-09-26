@@ -365,7 +365,8 @@ class MainActivity : Activity() {
             off.isChecked = true
         }
 
-        updateModeBadge(modeBadge, AppPrefs.mode(this, app.packageName))
+        val displayMode = if (AppPrefs.mode(this, app.packageName) == AppPrefs.Mode.BLOCK) AppPrefs.Mode.BLOCK else AppPrefs.Mode.OFF
+        updateModeBadge(modeBadge, displayMode)
 
         group.setOnCheckedChangeListener { _, checkedId ->
             val mode = if (checkedId == block.id) AppPrefs.Mode.BLOCK else AppPrefs.Mode.OFF
