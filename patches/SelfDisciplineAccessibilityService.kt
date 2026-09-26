@@ -387,7 +387,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
     }
 
     private fun stopPromptNow() {
-        handler.removeCallbacksAndMessages(null)
+        // 只停止当前提示，不停止前台监控轮询。
         removeOverlay()
         stopSound()
         protectedBlockPackage = null
