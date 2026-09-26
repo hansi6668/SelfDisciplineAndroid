@@ -1,7 +1,6 @@
 package com.sihan.selfdiscipline
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -25,7 +24,6 @@ import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import java.io.File
 import java.util.Locale
 
 class MainActivity : Activity() {
@@ -33,21 +31,16 @@ class MainActivity : Activity() {
     private lateinit var serviceStatus: TextView
     private lateinit var statSummary: TextView
     private lateinit var blockedStat: TextView
-    private lateinit var welcomeStat: TextView
     private lateinit var totalStat: TextView
     private lateinit var blockEdit: EditText
-    private lateinit var welcomeEdit: EditText
     private lateinit var blockSoundSummary: TextView
-    private lateinit var welcomeSoundSummary: TextView
     private lateinit var searchEdit: EditText
     private lateinit var filterGroup: RadioGroup
     private lateinit var filterAll: RadioButton
     private lateinit var filterBlock: RadioButton
-    private lateinit var filterWelcome: RadioButton
     private lateinit var emptyState: TextView
 
     private val pickBlockSound = 1001
-    private val pickWelcomeSound = 1002
     private var appsCache: List<AppItem> = emptyList()
 
     private val primary = Color.rgb(54, 92, 245)
@@ -69,7 +62,6 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        SelfDisciplineAccessibilityService.stopCurrentPrompt()
         refreshUi()
     }
 
@@ -88,9 +80,9 @@ class MainActivity : Activity() {
         scroll.addView(root)
         root.addView(headerCard(), lp(-1, -2, 0, 14))
         root.addView(overviewCard(), lp(-1, -2, 0, 18))
-        root.addView(sectionTitle("拦截提示", "打开被你设为拦截的 App 时立即提醒"), lp(-1, -2, 0, 9))
+        root.addView(sectionTitle("拦截提示", "进入被拦截应用时立即提醒并阻止继续使用"), lp(-1, -2, 0, 9))
         root.addView(messageCard(), lp(-1, -2, 0, 16))
-        root.addView(sectionTitle("拦截提示音", "可选择自己的音乐，未选择时使用系统提示音"), lp(-1, -2, 0, 9))
+        root.addView(sectionTitle("提示音", "支持自定义音乐，也可以使用系统短提示音"), lp(-1, -2, 0, 9))
         root.addView(soundCard(), lp(-1, -2, 0, 16))
         root.addView(sectionTitle("应用自律规则", "为每个应用选择你希望它扮演的角色"), lp(-1, -2, 0, 9))
         root.addView(appToolbar(), lp(-1, -2, 0, 10))
@@ -154,10 +146,9 @@ class MainActivity : Activity() {
         }
         info.addView(statSummary, lp(-1, -2, 2, 0))
         top.addView(info, LinearLayout.LayoutParams(0, -2, 1f))
-        top.addView(actionButton("权限设置", primary, true).apply {
-            setTextSize(13f)
-            setPadding(dp(10), 0, dp(10), 0)
-            setOnClickListener { openMonitoringSettings() }
+        top.addView(actionButton("打开设置", primary, true).apply {
+            setTextSize(13f); setPadding(dp(12), 0, dp(12), 0)
+            setOnClickListener { openAccessibilitySettings() }
         }, lp(dp(94), dp(42), 0, 0))
         outer.addView(top)
         val stats = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(14), 0, 0) }
@@ -184,25 +175,15 @@ class MainActivity : Activity() {
             setOnClickListener {
                 AppPrefs.setBlockMessage(this@MainActivity, blockEdit.text.toString().trim().ifEmpty {
                     "先停一下。\n你真的需要现在打开这个应用吗？"
-                })
-                toast("拦截提示已保存")
+                }); toast("拦截提示已保存")
             }
-        }, lp(-1, dp(46), 0, 0))
+        }, lp(-1, dp(46), 0, 16))
         return outer
     }
 
     private fun soundCard(): View {
         val outer = cardContainer()
-        outer.addView(
-            soundRow(
-                "拦截提示音",
-                "打开被拦截应用时播放；点击按钮立即停止。",
-                AppPrefs.blockSound(this),
-                primary,
-                pickBlockSound
-            ),
-            lp(-1, -2, 0, 0)
-        )
+        outer.addView(soundRow("拦截提示音", "触发拦截时播放；点击关闭或进入后立即停止。", AppPrefs.blockSound(this), primary, pickBlockSound), lp(-1, -2, 0, 14))
         return outer
     }
 
@@ -232,34 +213,22 @@ class MainActivity : Activity() {
     private fun appToolbar(): View {
         val outer = cardContainer().apply { setPadding(dp(12), dp(12), dp(12), dp(12)) }
         searchEdit = EditText(this).apply {
-            hint = "搜索应用名称"
-            setHintTextColor(Color.rgb(155, 160, 170))
-            textSize = 14f
-            setSingleLine(true)
-            inputType = InputType.TYPE_CLASS_TEXT
-            setTextColor(textPrimary)
-            setPadding(dp(14), dp(2), dp(14), dp(2))
-            background = rounded(Color.rgb(248, 249, 252), dp(15), softBorder)
+            hint = "搜索应用名称"; setHintTextColor(Color.rgb(155, 160, 170)); textSize = 14f
+            setSingleLine(true); inputType = InputType.TYPE_CLASS_TEXT; setTextColor(textPrimary)
+            setPadding(dp(14), dp(2), dp(14), dp(2)); background = rounded(Color.rgb(248, 249, 252), dp(15), softBorder)
         }
         searchEdit.addTextChangedListener(SimpleTextWatcher { renderApps() })
         outer.addView(searchEdit, lp(-1, dp(44), 0, 10))
-
         filterGroup = RadioGroup(this).apply {
-            orientation = RadioGroup.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = rounded(Color.rgb(246, 248, 252), dp(15))
-            setPadding(dp(3), dp(2), dp(3), dp(2))
+            orientation = RadioGroup.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            background = rounded(Color.rgb(246, 248, 252), dp(15)); setPadding(dp(3), dp(2), dp(3), dp(2))
         }
-        filterAll = filter("全部", textSecondary)
-        filterBlock = filter("拦截", primary)
-        filterGroup.addView(filterAll, weightLp())
-        filterGroup.addView(filterBlock, weightLp())
-        filterAll.isChecked = true
-        filterGroup.setOnCheckedChangeListener { _, _ -> renderApps() }
+        filterAll = filter("全部", textSecondary); filterBlock = filter("拦截", primary)
+        filterGroup.addView(filterAll, weightLp()); filterGroup.addView(filterBlock, weightLp())
+        filterAll.isChecked = true; filterGroup.setOnCheckedChangeListener { _, _ -> renderApps() }
         outer.addView(filterGroup, lp(-1, dp(43), 0, 0))
         return outer
     }
-
 
     private fun aboutCard(): View {
         val outer = cardContainer()
@@ -268,12 +237,12 @@ class MainActivity : Activity() {
             text = "使用说明"; textSize = 15f; setTextColor(textPrimary); typeface = Typeface.DEFAULT_BOLD
         }, LinearLayout.LayoutParams(0, -2, 1f))
         title.addView(TextView(this).apply {
-            text = "仅拦截"; textSize = 11f; setTextColor(textSecondary)
+            text = "本地运行"; textSize = 11f; setTextColor(textSecondary)
             background = rounded(Color.rgb(243, 245, 249), dp(15)); setPadding(dp(9), dp(5), dp(9), dp(5))
         })
         outer.addView(title, lp(-1, -2, 0, 7))
         outer.addView(textView(
-            "首次使用请开启“无障碍”权限，并建议同时开启“使用情况访问”权限。后者作为部分手机前台识别失败时的备用通道。服务只判断当前 App，不读取 App 内文字。",
+            "首次使用请在系统“无障碍”设置中开启“自律一下前台应用监控”。服务仅根据前台应用包名执行拦截，不读取应用内部的文字内容。",
             13f, textSecondary, 0, 0
         ))
         return outer
@@ -325,62 +294,35 @@ class MainActivity : Activity() {
         val iconBox = LinearLayout(this).apply { gravity = Gravity.CENTER; background = rounded(Color.rgb(247, 248, 252), dp(15)) }
         iconBox.addView(ImageView(this).apply { setImageDrawable(app.icon) }, LinearLayout.LayoutParams(dp(36), dp(36)))
         top.addView(iconBox, lp(dp(50), dp(50), 0, 0))
-
-        val nameBox = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(11), 0, dp(8), 0)
-        }
-        nameBox.addView(textView(app.label, 16f, textPrimary, 0, 2).apply {
-            typeface = Typeface.DEFAULT_BOLD
-            maxLines = 1
-        })
-        nameBox.addView(textView(
-            if (AppPrefs.mode(this, app.packageName) == AppPrefs.Mode.BLOCK) "打开时拦截" else "不干预",
-            12f, textSecondary, 0, 0
-        ))
+        val nameBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(11), 0, dp(8), 0) }
+        nameBox.addView(textView(app.label, 16f, textPrimary, 0, 2).apply { typeface = Typeface.DEFAULT_BOLD; maxLines = 1 })
+        nameBox.addView(textView(modeDescription(AppPrefs.mode(this, app.packageName)), 12f, textSecondary, 0, 0))
         top.addView(nameBox, LinearLayout.LayoutParams(0, -2, 1f))
-
-        val modeBadge = TextView(this).apply {
-            textSize = 11f
-            gravity = Gravity.CENTER
-            setPadding(dp(9), dp(5), dp(9), dp(5))
-        }
+        val modeBadge = TextView(this).apply { textSize = 11f; gravity = Gravity.CENTER; setPadding(dp(9), dp(5), dp(9), dp(5)) }
         top.addView(modeBadge, lp(-2, -2, 0, 0))
         outer.addView(top, lp(-1, -2, 0, 10))
-
         val group = RadioGroup(this).apply {
-            orientation = RadioGroup.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = rounded(Color.rgb(247, 248, 252), dp(15))
-            setPadding(dp(3), dp(2), dp(3), dp(2))
+            orientation = RadioGroup.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            background = rounded(Color.rgb(247, 248, 252), dp(15)); setPadding(dp(3), dp(2), dp(3), dp(2))
         }
         val off = radio("关闭", Color.rgb(104, 111, 124))
         val block = radio("拦截", primary)
-        group.addView(off, weightLp())
-        group.addView(block, weightLp())
-
-        if (AppPrefs.mode(this, app.packageName) == AppPrefs.Mode.BLOCK) {
-            block.isChecked = true
-        } else {
-            off.isChecked = true
+        val welcome = radio("鼓励", success)
+        group.addView(off, weightLp()); group.addView(block, weightLp()); group.addView(welcome, weightLp())
+        when (AppPrefs.mode(this, app.packageName)) {
+            AppPrefs.Mode.OFF -> off.isChecked = true
+            AppPrefs.Mode.BLOCK -> block.isChecked = true
         }
-
-        val displayMode = if (AppPrefs.mode(this, app.packageName) == AppPrefs.Mode.BLOCK) AppPrefs.Mode.BLOCK else AppPrefs.Mode.OFF
-        updateModeBadge(modeBadge, displayMode)
-
+        updateModeBadge(modeBadge, AppPrefs.mode(this, app.packageName))
         group.setOnCheckedChangeListener { _, checkedId ->
             val mode = if (checkedId == block.id) AppPrefs.Mode.BLOCK else AppPrefs.Mode.OFF
-            if (mode == AppPrefs.Mode.OFF) {
-                SelfDisciplineAccessibilityService.stopCurrentPrompt()
-            }
+            if (mode == AppPrefs.Mode.OFF) SelfDisciplineAccessibilityService.stopCurrentPrompt()
             AppPrefs.setMode(this, app.packageName, mode)
             updateModeBadge(modeBadge, mode)
             updateStats(appsCache)
             renderApps()
         }
-
-        outer.addView(group)
-        appList.addView(outer, lp(-1, -2, 0, 9))
+        outer.addView(group); appList.addView(outer, lp(-1, -2, 0, 9))
     }
 
     private fun modeDescription(mode: AppPrefs.Mode): String = when (mode) {
@@ -391,12 +333,10 @@ class MainActivity : Activity() {
 
     private fun updateStats(apps: List<AppItem>) {
         val blocked = apps.count { AppPrefs.mode(this, it.packageName) == AppPrefs.Mode.BLOCK }
-        val welcome = 0
-        statSummary.text = if (blocked == 0 && welcome == 0) "从下面选择应用，建立你的第一条自律规则"
-        else "已设置 $blocked 个拦截 · $welcome 个鼓励"
+        statSummary.text = if (blocked == 0) "从下面选择应用，建立你的第一条自律规则"
+        else "已设置 $blocked 个拦截应用"
         if (::blockedStat.isInitialized) {
             blockedStat.text = "$blocked\n拦截"
-            welcomeStat.text = "$welcome\n鼓励"
             totalStat.text = apps.size.toString() + "\n应用"
         }
     }
@@ -478,40 +418,14 @@ class MainActivity : Activity() {
         if (resultCode != RESULT_OK) return
         val uri = data?.data ?: return
         try { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) { }
-        val stored = copyAudioToPrivateStorage(uri, if (requestCode == pickBlockSound) "block" else "welcome")
-            ?: uri.toString()
-
         when (requestCode) {
-            pickBlockSound -> {
-                AppPrefs.setBlockSound(this, stored)
-                if (::blockSoundSummary.isInitialized) blockSoundSummary.text = soundName(stored)
-            }
-            pickWelcomeSound -> {
-                AppPrefs.setWelcomeSound(this, stored)
-                if (::welcomeSoundSummary.isInitialized) welcomeSoundSummary.text = soundName(stored)
-            }
+            pickBlockSound -> { AppPrefs.setBlockSound(this, uri.toString()); if (::blockSoundSummary.isInitialized) blockSoundSummary.text = soundName(uri.toString()) }
         }
         toast("提示音已保存")
     }
 
-    private fun copyAudioToPrivateStorage(uri: Uri, key: String): String? {
-        return try {
-            val dest = File(filesDir, key + "_prompt_audio")
-            contentResolver.openInputStream(uri)?.use { input ->
-                dest.outputStream().use { output -> input.copyTo(output) }
-            } ?: return null
-            "file://" + dest.absolutePath
-        } catch (_: Exception) {
-            null
-        }
-    }
-
     private fun soundName(uriString: String?): String {
         if (uriString.isNullOrBlank()) return "未选择，使用系统短提示音"
-        if (uriString.startsWith("file://")) {
-            return File(Uri.parse(uriString).path ?: "").takeIf { it.exists() }?.let { "已保存自定义音频" }
-                ?: "自定义音频不可用"
-        }
         return try {
             contentResolver.query(Uri.parse(uriString), arrayOf("_display_name"), null, null, null)?.use { c ->
                 if (c.moveToFirst()) c.getString(0) else "已选择自定义音频"
@@ -520,21 +434,6 @@ class MainActivity : Activity() {
     }
 
     private fun openAccessibilitySettings() { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
-
-    private fun openUsageAccessSettings() {
-        startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
-    }
-
-    private fun openMonitoringSettings() {
-        val options = arrayOf("无障碍设置", "使用情况访问")
-        AlertDialog.Builder(this)
-            .setTitle("开启前台监控权限")
-            .setItems(options) { _, which ->
-                if (which == 0) openAccessibilitySettings() else openUsageAccessSettings()
-            }
-            .setNegativeButton("取消", null)
-            .show()
-    }
 
     private fun isAccessibilityEnabled(): Boolean {
         val expected = ComponentName(this, SelfDisciplineAccessibilityService::class.java)
