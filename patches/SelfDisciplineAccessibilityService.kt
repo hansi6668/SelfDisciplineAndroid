@@ -35,7 +35,6 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
     private var player: MediaPlayer? = null
     private var tone: ToneGenerator? = null
     private var protectedBlockPackage: String? = null
-    private var retryToken = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -103,8 +102,6 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
             }
 
             AppPrefs.Mode.WELCOME -> stopPromptNow()
-
-            }
 
             AppPrefs.Mode.OFF -> stopPromptNow()
         }
@@ -177,17 +174,38 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
             }
         }, lp(-1, dp(52), 0, 0))
         addOverlay(root, true)
-        if (currentOverlay == null) scheduleBlockRetry(pkg)
     }
 
-    private fun scheduleBlockRetry(pkg: String) {
-        val token = ++retryToken
+    private fun showWelcomeOverlay() {
+        removeOverlay()
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(18), dp(13), dp(18), dp(13))
+            background = roundedBackground(Color.rgb(236, 250, 243), dp(22), Color.rgb(202, 237, 215))
+            isClickable = false
+        }
+        root.addView(TextView(this).apply {
+            text = "✓"
+            textSize = 20f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.rgb(45, 157, 99))
+            gravity = Gravity.CENTER
+            background = roundedBackground(Color.WHITE, dp(18))
+        }, lp(dp(38), dp(38), 0, 0))
+        root.addView(TextView(this).apply {
+            text = AppPrefs.welcomeMessage(this@SelfDisciplineAccessibilityService)
+            textSize = 16f
+            setLineSpacing(0f, 1.08f)
+            setTextColor(Color.rgb(35, 90, 58))
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(12), 0, 0, 0)
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        addOverlay(root, false)
         handler.postDelayed({
-            if (token == retryToken && protectedBlockPackage == pkg && currentPackage == pkg && currentOverlay == null) {
-                showBlockingOverlay(pkg)
-                if (currentOverlay != null) playSound(AppPrefs.blockSound(this))
-            }
-        }, 200)
+            removeOverlay()
+            stopSound()
+        }, 1800)
     }
 
     private fun actionButton(text: String, color: Int, filled: Boolean): Button = Button(this).apply {
@@ -230,7 +248,6 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
     }
 
     private fun stopPromptNow() {
-        retryToken++
         handler.removeCallbacksAndMessages(null)
         removeOverlay()
         stopSound()
