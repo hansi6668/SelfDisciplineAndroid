@@ -1,6 +1,7 @@
 package com.sihan.selfdiscipline
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -45,14 +46,27 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         activeInstance = this
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+
+        // 主动设置事件类型，避免部分 Android/厂商 ROM 使用资源 XML 的事件配置不完整。
+        serviceInfo = serviceInfo?.apply {
+            eventTypes =
+                AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
+                AccessibilityEvent.TYPE_WINDOWS_CHANGED or
+                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+            feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
+            notificationTimeout = 0
+            flags = flags or
+                AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
+                AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        val pkg = event?.packageName?.toString() ?: return
+        val pkg = resolveEventPackage(event) ?: return
 
-        // 用户主动打开“自律一下”时，立即关闭当前提示和音乐。
+        // 自律一下自己的界面、Accessibility Overlay 也可能产生无障碍事件。
+        // 不把这些事件当作前台切换；真正打开自律一下由 MainActivity.onResume() 主动停止提示。
         if (pkg == packageName) {
-            stopPromptNow()
             currentPackage = pkg
             return
         }
@@ -60,18 +74,31 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         val now = System.currentTimeMillis()
         val homePackage = resolveHomePackage()
 
-        // 拦截后执行 GLOBAL_ACTION_HOME 会产生桌面事件。
-        // 这个事件不能被当成“离开被拦截应用”，否则刚弹出的拦截页会立即消失。
+        // 拦截后返回桌面的事件不能关闭当前拦截页。
         if (protectedBlockPackage != null && pkg == homePackage) {
             return
         }
 
-        // 同一个应用短时间内会连续收到多个无障碍事件，只处理一次。
-        if (pkg == currentPackage && now - lastEventAt < 700) return
+        if (pkg == currentPackage && now - lastEventAt < 500) return
 
         currentPackage = pkg
         lastEventAt = now
         evaluatePackage(pkg)
+    }
+
+    private fun resolveEventPackage(event: AccessibilityEvent?): String? {
+        val direct = event?.packageName?.toString()?.takeIf { it.isNotBlank() }
+        if (direct != null && direct != "android") {
+            return direct
+        }
+
+        return try {
+            rootInActiveWindow?.packageName?.toString()?.takeIf {
+                it.isNotBlank() && it != "android"
+            }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     override fun onInterrupt() = Unit
