@@ -26,7 +26,7 @@ jobs:
           EOF
           python3 - <<'PY'
           p="app/build.gradle.kts"
-          s=open(p,encoding="utf-8").read().replace('versionCode = 1','versionCode = 2').replace('versionName = "1.0.0"','versionName = "1.1.0"')
+          s=open(p,encoding="utf-8").read().replace('versionCode = 1','versionCode = 3').replace('versionCode = 2','versionCode = 3').replace('versionName = "1.0.0"','versionName = "1.2.0"').replace('versionName = "1.1.0"','versionName = "1.2.0"')
           open(p,'w',encoding='utf-8').write(s)
           PY
 
