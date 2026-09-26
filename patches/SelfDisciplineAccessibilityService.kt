@@ -274,3 +274,5 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
 
     private fun lp(w: Int, h: Int, top: Int, bottom: Int): LinearLayout.LayoutParams =
         LinearLayout.LayoutParams(w, h).apply { topMargin = dp(top); bottomMargin = dp(bottom) }
+
+}
