@@ -66,8 +66,13 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val pkg = resolveEventPackage(event) ?: return
 
-        // 同一个前台应用会连续产生大量内容变化事件。
-        // 只在“真正切换到另一个应用”时触发一次，避免鼓励/拦截界面反复创建导致闪烁。
+        // 拦截提示一旦出现，就保持到用户明确点击按钮为止。
+        // 忽略 HOME、系统窗口、其他辅助事件，防止界面闪退或被重新绘制。
+        if (protectedBlockPackage != null) {
+            return
+        }
+
+        // 同一个前台应用只处理第一次进入事件，避免内容变化导致鼓励提示反复闪烁。
         if (pkg == currentPackage) {
             return
         }
@@ -76,11 +81,6 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
 
         if (pkg == packageName) {
             stopPromptNow()
-            return
-        }
-
-        // 拦截页出现后，HOME 事件及其后续窗口变化不应关闭拦截页。
-        if (protectedBlockPackage != null && pkg == resolveHomePackage()) {
             return
         }
 
@@ -217,13 +217,19 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
 
     private fun showWelcomeOverlay() {
         removeOverlay()
+
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(18), dp(13), dp(18), dp(13))
-            background = roundedBackground(Color.rgb(236, 250, 243), dp(22), Color.rgb(202, 237, 215))
-            isClickable = false
+            setPadding(dp(16), dp(12), dp(10), dp(12))
+            background = roundedBackground(
+                Color.rgb(236, 250, 243),
+                dp(22),
+                Color.rgb(202, 237, 215)
+            )
+            isClickable = true
         }
+
         root.addView(TextView(this).apply {
             text = "✓"
             textSize = 20f
@@ -232,19 +238,34 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
             gravity = Gravity.CENTER
             background = roundedBackground(Color.WHITE, dp(18))
         }, lp(dp(38), dp(38), 0, 0))
+
         root.addView(TextView(this).apply {
             text = AppPrefs.welcomeMessage(this@SelfDisciplineAccessibilityService)
             textSize = 16f
             setLineSpacing(0f, 1.08f)
             setTextColor(Color.rgb(35, 90, 58))
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(12), 0, 0, 0)
+            setPadding(dp(12), 0, dp(8), 0)
         }, LinearLayout.LayoutParams(0, -2, 1f))
+
+        root.addView(TextView(this).apply {
+            text = "×"
+            textSize = 24f
+            setTextColor(Color.rgb(75, 120, 92))
+            gravity = Gravity.CENTER
+            isClickable = true
+            setOnClickListener {
+                removeOverlay()
+                stopSound()
+            }
+        }, lp(dp(36), dp(38), 0, 0))
+
         addOverlay(root, false)
+
         handler.postDelayed({
             removeOverlay()
             stopSound()
-        }, 1800)
+        }, 2500)
     }
 
     private fun actionButton(text: String, color: Int, filled: Boolean): Button = Button(this).apply {
@@ -309,13 +330,6 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
                 tone = ToneGenerator(AudioManager.STREAM_MUSIC, 90).also {
                     it.startTone(ToneGenerator.TONE_PROP_BEEP2, 260)
                 }
-                val captured = tone
-                handler.postDelayed({
-                    if (tone === captured) {
-                        try { captured?.release() } catch (_: Exception) { }
-                        tone = null
-                    }
-                }, 350)
             } catch (_: Exception) {
                 tone = null
             }
@@ -323,30 +337,26 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         }
 
         try {
-            val mp = MediaPlayer()
-            mp.setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                    .build()
-            )
-            mp.setVolume(1.0f, 1.0f)
-
             val soundUri = Uri.parse(uriString)
-            if (soundUri.scheme == "file") {
+            val mp = if (soundUri.scheme == "file") {
                 val path = soundUri.path ?: throw IllegalArgumentException("audio path is empty")
-                mp.setDataSource(path)
+                MediaPlayer().apply {
+                    setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                            .build()
+                    )
+                    setVolume(1.0f, 1.0f)
+                    setDataSource(path)
+                    prepare()
+                }
             } else {
-                mp.setDataSource(this, soundUri)
+                MediaPlayer.create(this, soundUri)
+                    ?: throw IllegalStateException("MediaPlayer.create returned null")
             }
 
-            mp.setOnPreparedListener { prepared ->
-                if (player === prepared) {
-                    try { prepared.start() } catch (_: Exception) { }
-                } else {
-                    try { prepared.release() } catch (_: Exception) { }
-                }
-            }
+            mp.setVolume(1.0f, 1.0f)
             mp.setOnCompletionListener { completed ->
                 if (player === completed) player = null
                 try { completed.release() } catch (_: Exception) { }
@@ -356,23 +366,21 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
                 if (player === failed) player = null
                 try { failed.release() } catch (_: Exception) { }
                 abandonAudioFocus()
-                try {
-                    tone = ToneGenerator(AudioManager.STREAM_MUSIC, 90).also {
-                        it.startTone(ToneGenerator.TONE_PROP_BEEP2, 220)
-                    }
-                } catch (_: Exception) { }
                 true
             }
 
             player = mp
-            mp.prepareAsync()
+            mp.start()
         } catch (_: Exception) {
             player = null
+            // 自定义音频失败时仍给出系统提示音，保证用户能感知到触发。
             try {
                 tone = ToneGenerator(AudioManager.STREAM_MUSIC, 90).also {
                     it.startTone(ToneGenerator.TONE_PROP_BEEP2, 220)
                 }
-            } catch (_: Exception) { }
+            } catch (_: Exception) {
+                tone = null
+            }
         }
     }
 
