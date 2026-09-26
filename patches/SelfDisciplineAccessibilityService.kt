@@ -44,6 +44,9 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
     private var audioFocusRequest: AudioFocusRequest? = null
     private var melodyTrack: AudioTrack? = null
     private var welcomedPackage: String? = null
+    private var welcomeDismissRunnable: Runnable? = null
+    private var suppressedPackage: String? = null
+    private var suppressedUntil: Long = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -62,33 +65,71 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
                 AccessibilityEvent.TYPE_WINDOWS_CHANGED or
                 AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-            notificationTimeout = 0
+            notificationTimeout = 50
             flags = flags or
                 AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
                 AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
         }
+
+        // 部分 ROM 不稳定发送前台切换事件，增加轻量轮询作为兜底。
+        handler.removeCallbacks(foregroundWatcher)
+        handler.post(foregroundWatcher)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        val type = event?.eventType ?: return
-        if (type != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
-            type != AccessibilityEvent.TYPE_WINDOWS_CHANGED &&
-            type != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
-            return
+        val pkg = resolveEventPackage(event) ?: return
+        handleForegroundPackage(pkg)
+    }
+
+    private val foregroundWatcher = object : Runnable {
+        override fun run() {
+            try {
+                resolveForegroundPackage()?.let { handleForegroundPackage(it) }
+            } catch (_: Exception) {
+            }
+            handler.postDelayed(this, 350L)
+        }
+    }
+
+    private fun resolveForegroundPackage(): String? {
+        try {
+            rootInActiveWindow?.packageName?.toString()?.takeIf { isUsableForegroundPackage(it) }
+                ?.let { return it }
+        } catch (_: Exception) {
         }
 
-        val pkg = resolveEventPackage(event) ?: return
+        try {
+            getWindows()
+                .asSequence()
+                .filter { it.isActive || it.isFocused }
+                .sortedByDescending { if (it.isActive) 2 else 1 }
+                .mapNotNull { window ->
+                    try { window.root?.packageName?.toString() } catch (_: Exception) { null }
+                }
+                .firstOrNull { isUsableForegroundPackage(it) }
+                ?.let { return it }
+        } catch (_: Exception) {
+        }
+
+        return null
+    }
+
+    private fun handleForegroundPackage(pkg: String) {
+        val now = System.currentTimeMillis()
         val homePackage = resolveHomePackage()
 
-        // 已经进入拦截状态时，只允许拦截目标 App 的“前台回归”来恢复悬浮层。
+        if (suppressedPackage == pkg && now < suppressedUntil) {
+            return
+        }
+        if (now >= suppressedUntil) {
+            suppressedPackage = null
+        }
+
+        // 拦截页面存在期间保持；目标 App 再次前台且页面异常消失时自动恢复。
         if (protectedBlockPackage != null) {
             if (pkg == protectedBlockPackage &&
                 (currentOverlay == null || !currentOverlay!!.isAttachedToWindow)) {
-                if (tempAllowedPackage == pkg &&
-                    System.currentTimeMillis() < tempAllowedUntil) {
-                    return
-                }
-
+                if (tempAllowedPackage == pkg && now < tempAllowedUntil) return
                 showBlockingOverlay(pkg)
                 playSound(AppPrefs.blockSound(this), true)
                 performGlobalAction(GLOBAL_ACTION_HOME)
@@ -104,88 +145,74 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
             return
         }
 
-        if (pkg == "android" ||
-            pkg == "com.android.systemui" ||
-            pkg == "com.google.android.permissioncontroller" ||
-            pkg == "com.android.permissioncontroller") {
-            return
-        }
+        if (!isUsableForegroundPackage(pkg)) return
 
-        val mode = AppPrefs.mode(this, pkg)
+        when (AppPrefs.mode(this, pkg)) {
+            AppPrefs.Mode.BLOCK -> {
+                if (tempAllowedPackage == pkg && now < tempAllowedUntil) {
+                    currentPackage = pkg
+                    return
+                }
 
-        // 拦截不采用 currentPackage 去重，只要目标 App 前台且没有拦截层就触发。
-        if (mode == AppPrefs.Mode.BLOCK) {
-            if (tempAllowedPackage == pkg &&
-                System.currentTimeMillis() < tempAllowedUntil) {
-                return
+                // 拦截不使用 currentPackage 去重；只要页面不存在就重新建立拦截。
+                if (currentOverlay == null || !currentOverlay!!.isAttachedToWindow) {
+                    stopSound()
+                    protectedBlockPackage = pkg
+                    currentPackage = pkg
+                    welcomedPackage = null
+                    showBlockingOverlay(pkg)
+                    playSound(AppPrefs.blockSound(this), true)
+                    performGlobalAction(GLOBAL_ACTION_HOME)
+                }
             }
 
-            if (currentOverlay == null || !currentOverlay!!.isAttachedToWindow) {
-                stopSound()
-                protectedBlockPackage = pkg
+            AppPrefs.Mode.WELCOME -> {
+                if (pkg == currentPackage && welcomedPackage == pkg) {
+                    return
+                }
+
+                stopPromptNow()
                 currentPackage = pkg
-                showBlockingOverlay(pkg)
-                playSound(AppPrefs.blockSound(this), true)
-                performGlobalAction(GLOBAL_ACTION_HOME)
+                welcomedPackage = pkg
+                showWelcomeOverlay()
+                playSound(AppPrefs.welcomeSound(this), false)
             }
-            return
+
+            AppPrefs.Mode.OFF -> {
+                currentPackage = pkg
+                welcomedPackage = null
+            }
         }
-
-        // 鼓励保持去重，同一个 App 在前台期间只提示一次。
-        if (pkg == currentPackage) return
-
-        stopPromptNow()
-        currentPackage = pkg
-        evaluatePackage(pkg)
     }
 
     private fun resolveEventPackage(event: AccessibilityEvent?): String? {
-        val direct = event?.packageName?.toString()?.takeIf { it.isNotBlank() && it != "android" }
-        if (direct != null) return direct
-
-        return try {
-            rootInActiveWindow?.packageName?.toString()?.takeIf {
-                it.isNotBlank() && it != "android"
-            }
-        } catch (_: Exception) {
-            null
-        }
+        val direct = event?.packageName?.toString()
+        return direct?.takeIf { it.isNotBlank() } ?: resolveForegroundPackage()
     }
+
+    private fun isUsableForegroundPackage(pkg: String): Boolean {
+        if (pkg.isBlank() || pkg == "android") return false
+        if (pkg == packageName) return false
+        if (pkg == "com.android.systemui") return false
+        if (pkg == "com.google.android.permissioncontroller") return false
+        if (pkg == "com.android.permissioncontroller") return false
+        val home = resolveHomePackage()
+        if (home != null && pkg == home) return false
+        return true
+    }
+
 
     override fun onInterrupt() = Unit
 
     override fun onDestroy() {
+        handler.removeCallbacks(foregroundWatcher)
         stopPromptNow()
         if (activeInstance === this) activeInstance = null
         super.onDestroy()
     }
 
     private fun evaluatePackage(pkg: String) {
-        when (AppPrefs.mode(this, pkg)) {
-            AppPrefs.Mode.BLOCK -> {
-                if (tempAllowedPackage == pkg && System.currentTimeMillis() < tempAllowedUntil) {
-                    return
-                }
-
-                protectedBlockPackage = pkg
-                welcomedPackage = null
-                showBlockingOverlay(pkg)
-                playSound(AppPrefs.blockSound(this), true)
-                performGlobalAction(GLOBAL_ACTION_HOME)
-            }
-
-            AppPrefs.Mode.WELCOME -> {
-                protectedBlockPackage = null
-                if (welcomedPackage == pkg && currentOverlay != null) {
-                    return
-                }
-                welcomedPackage = pkg
-                showWelcomeOverlay()
-                playSound(AppPrefs.welcomeSound(this), false)
-            }
-
-            AppPrefs.Mode.OFF -> Unit
-        }
+        handleForegroundPackage(pkg)
     }
 
 
@@ -242,6 +269,8 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         }, lp(-1, -2, 0, 20))
         root.addView(actionButton("回到桌面", Color.rgb(54, 92, 245), true).apply {
             setOnClickListener {
+                suppressedPackage = pkg
+                suppressedUntil = System.currentTimeMillis() + 1500L
                 stopPromptNow()
                 performGlobalAction(GLOBAL_ACTION_HOME)
             }
@@ -249,6 +278,8 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         root.addView(actionButton("我确定，进入 5 分钟", Color.TRANSPARENT, false).apply {
             setTextColor(Color.rgb(54, 92, 245))
             setOnClickListener {
+                suppressedPackage = pkg
+                suppressedUntil = System.currentTimeMillis() + 1500L
                 stopPromptNow()
                 tempAllowedPackage = pkg
                 tempAllowedUntil = System.currentTimeMillis() + 5 * 60 * 1000L
@@ -302,11 +333,14 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
 
         addOverlay(root, false)
 
-        handler.postDelayed({
+        welcomeDismissRunnable?.let { handler.removeCallbacks(it) }
+        val dismissTask = Runnable {
             if (currentOverlay === root) {
                 stopPromptNow()
             }
-        }, 2500)
+        }
+        welcomeDismissRunnable = dismissTask
+        handler.postDelayed(dismissTask, 2500)
     }
 
     private fun actionButton(text: String, color: Int, filled: Boolean): Button = Button(this).apply {
@@ -351,7 +385,8 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
     }
 
     private fun stopPromptNow() {
-        handler.removeCallbacksAndMessages(null)
+        welcomeDismissRunnable?.let { handler.removeCallbacks(it) }
+        welcomeDismissRunnable = null
         removeOverlay()
         stopSound()
         protectedBlockPackage = null
