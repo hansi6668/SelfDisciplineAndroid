@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.ToneGenerator
@@ -36,6 +37,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
     private var player: MediaPlayer? = null
     private var tone: ToneGenerator? = null
     private var protectedBlockPackage: String? = null
+    private var audioFocusRequest: AudioFocusRequest? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -64,33 +66,30 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val pkg = resolveEventPackage(event) ?: return
 
-        // 自律一下自己的界面、Accessibility Overlay 也可能产生无障碍事件。
-        // 不把这些事件当作前台切换；真正打开自律一下由 MainActivity.onResume() 主动停止提示。
-        if (pkg == packageName) {
-            currentPackage = pkg
+        // 同一个前台应用会连续产生大量内容变化事件。
+        // 只在“真正切换到另一个应用”时触发一次，避免鼓励/拦截界面反复创建导致闪烁。
+        if (pkg == currentPackage) {
             return
         }
-
-        val now = System.currentTimeMillis()
-        val homePackage = resolveHomePackage()
-
-        // 拦截后返回桌面的事件不能关闭当前拦截页。
-        if (protectedBlockPackage != null && pkg == homePackage) {
-            return
-        }
-
-        if (pkg == currentPackage && now - lastEventAt < 500) return
 
         currentPackage = pkg
-        lastEventAt = now
+
+        if (pkg == packageName) {
+            stopPromptNow()
+            return
+        }
+
+        // 拦截页出现后，HOME 事件及其后续窗口变化不应关闭拦截页。
+        if (protectedBlockPackage != null && pkg == resolveHomePackage()) {
+            return
+        }
+
         evaluatePackage(pkg)
     }
 
     private fun resolveEventPackage(event: AccessibilityEvent?): String? {
-        val direct = event?.packageName?.toString()?.takeIf { it.isNotBlank() }
-        if (direct != null && direct != "android") {
-            return direct
-        }
+        val direct = event?.packageName?.toString()?.takeIf { it.isNotBlank() && it != "android" }
+        if (direct != null) return direct
 
         return try {
             rootInActiveWindow?.packageName?.toString()?.takeIf {
@@ -113,18 +112,14 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         when (AppPrefs.mode(this, pkg)) {
             AppPrefs.Mode.BLOCK -> {
                 if (tempAllowedPackage == pkg && System.currentTimeMillis() < tempAllowedUntil) {
-                    stopPromptNow()
                     return
                 }
 
                 protectedBlockPackage = pkg
-                removeOverlay()
-                stopSound()
-
-                // 立即显示拦截页和声音，再把原应用送回桌面。
-                // 桌面事件会被 protectedBlockPackage 拦截掉，不会关闭提示。
                 showBlockingOverlay(pkg)
                 playSound(AppPrefs.blockSound(this))
+
+                // 拦截到以后把目标应用送回桌面，但不再因为后续桌面事件重建/关闭提示。
                 performGlobalAction(GLOBAL_ACTION_HOME)
             }
 
@@ -135,6 +130,19 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
             }
 
             AppPrefs.Mode.OFF -> stopPromptNow()
+        }
+    }
+
+    private fun resolveHomePackage(): String? {
+        return try {
+            packageManager.resolveActivity(
+                android.content.Intent(android.content.Intent.ACTION_MAIN).addCategory(
+                    android.content.Intent.CATEGORY_HOME
+                ),
+                android.content.pm.PackageManager.MATCH_DEFAULT_ONLY
+            )?.activityInfo?.packageName
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -294,10 +302,12 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
     private fun playSound(uriString: String?) {
         stopSound()
 
+        requestAudioFocus()
+
         if (uriString.isNullOrBlank()) {
             try {
                 tone = ToneGenerator(AudioManager.STREAM_MUSIC, 90).also {
-                    it.startTone(ToneGenerator.TONE_PROP_BEEP2, 220)
+                    it.startTone(ToneGenerator.TONE_PROP_BEEP2, 260)
                 }
                 val captured = tone
                 handler.postDelayed({
@@ -305,7 +315,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
                         try { captured?.release() } catch (_: Exception) { }
                         tone = null
                     }
-                }, 300)
+                }, 350)
             } catch (_: Exception) {
                 tone = null
             }
@@ -320,12 +330,16 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
                     .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                     .build()
             )
+            mp.setVolume(1.0f, 1.0f)
+
             val soundUri = Uri.parse(uriString)
             if (soundUri.scheme == "file") {
-                mp.setDataSource(soundUri.path ?: return)
+                val path = soundUri.path ?: throw IllegalArgumentException("audio path is empty")
+                mp.setDataSource(path)
             } else {
                 mp.setDataSource(this, soundUri)
             }
+
             mp.setOnPreparedListener { prepared ->
                 if (player === prepared) {
                     try { prepared.start() } catch (_: Exception) { }
@@ -336,17 +350,69 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
             mp.setOnCompletionListener { completed ->
                 if (player === completed) player = null
                 try { completed.release() } catch (_: Exception) { }
+                abandonAudioFocus()
             }
             mp.setOnErrorListener { failed, _, _ ->
                 if (player === failed) player = null
                 try { failed.release() } catch (_: Exception) { }
+                abandonAudioFocus()
+                try {
+                    tone = ToneGenerator(AudioManager.STREAM_MUSIC, 90).also {
+                        it.startTone(ToneGenerator.TONE_PROP_BEEP2, 220)
+                    }
+                } catch (_: Exception) { }
                 true
             }
+
             player = mp
             mp.prepareAsync()
         } catch (_: Exception) {
             player = null
+            try {
+                tone = ToneGenerator(AudioManager.STREAM_MUSIC, 90).also {
+                    it.startTone(ToneGenerator.TONE_PROP_BEEP2, 220)
+                }
+            } catch (_: Exception) { }
         }
+    }
+
+    private fun requestAudioFocus() {
+        try {
+            val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+            val attrs = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                .build()
+
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                    .setAudioAttributes(attrs)
+                    .setAcceptsDelayedFocusGain(false)
+                    .build()
+                audioFocusRequest = request
+                audioManager.requestAudioFocus(request)
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.requestAudioFocus(
+                    null,
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+                )
+            }
+        } catch (_: Exception) { }
+    }
+
+    private fun abandonAudioFocus() {
+        try {
+            val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+                audioFocusRequest = null
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.abandonAudioFocus(null)
+            }
+        } catch (_: Exception) { }
     }
 
     private fun stopSound() {
@@ -355,6 +421,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         player = null
         try { tone?.release() } catch (_: Exception) { }
         tone = null
+        abandonAudioFocus()
     }
 
     private fun roundedBackground(fill: Int, radius: Int, strokeColor: Int? = null): GradientDrawable = GradientDrawable().apply {
