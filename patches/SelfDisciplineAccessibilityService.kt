@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.ToneGenerator
@@ -33,6 +34,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
     private var tempAllowedPackage: String? = null
     private var player: MediaPlayer? = null
     private var tone: ToneGenerator? = null
+    private var protectedBlockPackage: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -47,16 +49,34 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val pkg = event?.packageName?.toString() ?: return
+
         if (pkg == packageName) {
             stopPromptNow()
             currentPackage = pkg
             return
         }
+
         val now = System.currentTimeMillis()
-        if (pkg == currentPackage && now - lastEventAt < 800) return
-        lastEventAt = now
+        val homePackage = resolveHomePackage()
+
+        // 拦截应用执行 GLOBAL_ACTION_HOME 后，系统会紧接着发送桌面事件。
+        // 此时必须忽略该桌面事件，否则会把刚显示的拦截页和音乐立即关掉。
+        if (protectedBlockPackage != null && pkg == homePackage) {
+            return
+        }
+
+        if (pkg == currentPackage && now - lastEventAt < 250) return
+
         currentPackage = pkg
-        evaluatePackage(pkg)
+        lastEventAt = now
+
+        // 给前台窗口切换留出极短的稳定时间，减少 Android 不同机型上的竞态。
+        val delay = if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) 60L else 120L
+        handler.postDelayed({
+            if (currentPackage == pkg) {
+                evaluatePackage(pkg)
+            }
+        }, delay)
     }
 
     override fun onInterrupt() = Unit
@@ -74,15 +94,37 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
                     stopPromptNow()
                     return
                 }
+
+                protectedBlockPackage = pkg
+                removeOverlay()
+                stopSound()
+
+                // 先回桌面，再保持拦截状态；后续桌面事件由 onAccessibilityEvent 忽略。
                 performGlobalAction(GLOBAL_ACTION_HOME)
                 showBlockingOverlay(pkg)
                 playSound(AppPrefs.blockSound(this))
             }
+
             AppPrefs.Mode.WELCOME -> {
+                protectedBlockPackage = null
                 showWelcomeOverlay()
                 playSound(AppPrefs.welcomeSound(this))
             }
+
             AppPrefs.Mode.OFF -> stopPromptNow()
+        }
+    }
+
+    private fun resolveHomePackage(): String? {
+        return try {
+            packageManager.resolveActivity(
+                android.content.Intent(android.content.Intent.ACTION_MAIN).addCategory(
+                    android.content.Intent.CATEGORY_HOME
+                ),
+                android.content.pm.PackageManager.MATCH_DEFAULT_ONLY
+            )?.activityInfo?.packageName
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -217,6 +259,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         handler.removeCallbacksAndMessages(null)
         removeOverlay()
         stopSound()
+        protectedBlockPackage = null
     }
 
     private fun openPackage(pkg: String) {
@@ -227,10 +270,11 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
 
     private fun playSound(uriString: String?) {
         stopSound()
+
         if (uriString.isNullOrBlank()) {
             try {
-                tone = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 80).also {
-                    it.startTone(ToneGenerator.TONE_PROP_BEEP2, 180)
+                tone = ToneGenerator(AudioManager.STREAM_MUSIC, 90).also {
+                    it.startTone(ToneGenerator.TONE_PROP_BEEP2, 220)
                 }
                 val captured = tone
                 handler.postDelayed({
@@ -238,19 +282,43 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
                         try { captured?.release() } catch (_: Exception) { }
                         tone = null
                     }
-                }, 250)
-            } catch (_: Exception) { tone = null }
+                }, 300)
+            } catch (_: Exception) {
+                tone = null
+            }
             return
         }
+
         try {
-            player = MediaPlayer.create(this, Uri.parse(uriString))?.also {
-                it.setOnCompletionListener { mp ->
-                    try { mp.release() } catch (_: Exception) { }
-                    if (player === mp) player = null
+            val mp = MediaPlayer()
+            mp.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
+            mp.setDataSource(this, Uri.parse(uriString))
+            mp.setOnPreparedListener { prepared ->
+                if (player === prepared) {
+                    try { prepared.start() } catch (_: Exception) { }
+                } else {
+                    try { prepared.release() } catch (_: Exception) { }
                 }
-                it.start()
             }
-        } catch (_: Exception) { player = null }
+            mp.setOnCompletionListener { completed ->
+                if (player === completed) player = null
+                try { completed.release() } catch (_: Exception) { }
+            }
+            mp.setOnErrorListener { failed, _, _ ->
+                if (player === failed) player = null
+                try { failed.release() } catch (_: Exception) { }
+                true
+            }
+            player = mp
+            mp.prepareAsync()
+        } catch (_: Exception) {
+            player = null
+        }
     }
 
     private fun stopSound() {
