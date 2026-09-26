@@ -26,8 +26,15 @@ jobs:
           }
           EOF
           python3 - <<'PY'
+          p="app/src/main/AndroidManifest.xml"
+          s=open(p,encoding="utf-8").read()
+          if "android.permission.PACKAGE_USAGE_STATS" not in s:
+              s=s.replace("<application", ' <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />\n    <application', 1)
+          open(p,'w',encoding='utf-8').write(s)
+          PY
+          python3 - <<'PY'
           p="app/build.gradle.kts"
-          s=open(p,encoding="utf-8").read().replace('versionCode = 1','versionCode = 9').replace('versionCode = 2','versionCode = 9').replace('versionCode = 3','versionCode = 9').replace('versionCode = 4','versionCode = 9').replace('versionCode = 5','versionCode = 9').replace('versionCode = 6','versionCode = 9').replace('versionCode = 7','versionCode = 9').replace('versionCode = 8','versionCode = 9').replace('versionName = "1.0.0"','versionName = "1.4.0"').replace('versionName = "1.1.0"','versionName = "1.4.0"').replace('versionName = "1.2.0"','versionName = "1.4.0"')
+          s=open(p,encoding="utf-8").read().replace('versionCode = 1','versionCode = 10').replace('versionCode = 2','versionCode = 10').replace('versionCode = 3','versionCode = 10').replace('versionCode = 4','versionCode = 10').replace('versionCode = 5','versionCode = 10').replace('versionCode = 6','versionCode = 10').replace('versionCode = 7','versionCode = 10').replace('versionCode = 8','versionCode = 10').replace('versionCode = 9','versionCode = 10').replace('versionName = "1.0.0"','versionName = "1.9.0"').replace('versionName = "1.1.0"','versionName = "1.9.0"').replace('versionName = "1.2.0"','versionName = "1.9.0"').replace('versionName = "1.3.0"','versionName = "1.9.0"').replace('versionName = "1.4.0"','versionName = "1.9.0"').replace('versionName = "1.5.0"','versionName = "1.9.0"').replace('versionName = "1.6.0"','versionName = "1.9.0"').replace('versionName = "1.7.0"','versionName = "1.9.0"').replace('versionName = "1.8.0"','versionName = "1.9.0"')
           open(p,'w',encoding='utf-8').write(s)
           PY
 
