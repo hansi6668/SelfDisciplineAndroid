@@ -10,6 +10,10 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.ToneGenerator
+import android.media.AudioFormat
+import android.media.AudioTrack
+import kotlin.math.PI
+import kotlin.math.sin
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -38,6 +42,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
     private var tone: ToneGenerator? = null
     private var protectedBlockPackage: String? = null
     private var audioFocusRequest: AudioFocusRequest? = null
+    private var melodyTrack: AudioTrack? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -66,26 +71,37 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val pkg = resolveEventPackage(event) ?: return
 
-        // 拦截提示一旦出现，就保持到用户明确点击按钮为止。
-        // 忽略 HOME、系统窗口、其他辅助事件，防止界面闪退或被重新绘制。
+        // 拦截页出现后，任何系统窗口/桌面/内容变化都不能打掉拦截页。
         if (protectedBlockPackage != null) {
             return
         }
 
-        // 同一个前台应用只处理第一次进入事件，避免内容变化导致鼓励提示反复闪烁。
+        // 系统 UI、桌面和本应用自己的窗口不是“新的目标应用”。
+        if (isIgnoredPackage(pkg)) {
+            if (pkg == packageName) {
+                stopPromptNow()
+                currentPackage = pkg
+            }
+            return
+        }
+
+        // 同一个真实应用持续运行期间，只触发一次鼓励。
         if (pkg == currentPackage) {
             return
         }
 
+        stopPromptNow()
         currentPackage = pkg
-
-        if (pkg == packageName) {
-            stopPromptNow()
-            return
-        }
-
         evaluatePackage(pkg)
     }
+
+    private fun isIgnoredPackage(pkg: String): Boolean {
+        if (pkg == packageName || pkg == "android" || pkg == "com.android.systemui") return true
+        if (pkg == "com.google.android.permissioncontroller" || pkg == "com.android.permissioncontroller") return true
+        val home = resolveHomePackage()
+        return home != null && pkg == home
+    }
+
 
     private fun resolveEventPackage(event: AccessibilityEvent?): String? {
         val direct = event?.packageName?.toString()?.takeIf { it.isNotBlank() && it != "android" }
@@ -117,21 +133,20 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
 
                 protectedBlockPackage = pkg
                 showBlockingOverlay(pkg)
-                playSound(AppPrefs.blockSound(this))
-
-                // 拦截到以后把目标应用送回桌面，但不再因为后续桌面事件重建/关闭提示。
+                playSound(AppPrefs.blockSound(this), true)
                 performGlobalAction(GLOBAL_ACTION_HOME)
             }
 
             AppPrefs.Mode.WELCOME -> {
                 protectedBlockPackage = null
                 showWelcomeOverlay()
-                playSound(AppPrefs.welcomeSound(this))
+                playSound(AppPrefs.welcomeSound(this), false)
             }
 
-            AppPrefs.Mode.OFF -> stopPromptNow()
+            AppPrefs.Mode.OFF -> Unit
         }
     }
+
 
     private fun resolveHomePackage(): String? {
         return try {
@@ -208,13 +223,10 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(12), dp(10), dp(12))
-            background = roundedBackground(
-                Color.rgb(236, 250, 243),
-                dp(22),
-                Color.rgb(202, 237, 215)
-            )
+            setPadding(dp(16), dp(12), dp(6), dp(12))
+            background = roundedBackground(Color.rgb(236, 250, 243), dp(22), Color.rgb(202, 237, 215))
             isClickable = true
+            isFocusable = true
         }
 
         root.addView(TextView(this).apply {
@@ -235,23 +247,24 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
             setPadding(dp(12), 0, dp(8), 0)
         }, LinearLayout.LayoutParams(0, -2, 1f))
 
-        root.addView(TextView(this).apply {
+        root.addView(Button(this).apply {
             text = "×"
-            textSize = 24f
-            setTextColor(Color.rgb(75, 120, 92))
-            gravity = Gravity.CENTER
-            isClickable = true
-            setOnClickListener {
-                removeOverlay()
-                stopSound()
-            }
-        }, lp(dp(36), dp(38), 0, 0))
+            textSize = 22f
+            isAllCaps = false
+            minWidth = 0
+            minHeight = 0
+            setPadding(0, 0, 0, 0)
+            setTextColor(Color.rgb(55, 105, 75))
+            background = roundedBackground(Color.TRANSPARENT, dp(18))
+            setOnClickListener { stopPromptNow() }
+        }, lp(dp(42), dp(42), 0, 0))
 
         addOverlay(root, false)
 
         handler.postDelayed({
-            removeOverlay()
-            stopSound()
+            if (currentOverlay === root) {
+                stopPromptNow()
+            }
         }, 2500)
     }
 
@@ -307,19 +320,12 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         try { startActivity(launchIntent) } catch (_: Exception) { }
     }
 
-    private fun playSound(uriString: String?) {
+    private fun playSound(uriString: String?, loop: Boolean) {
         stopSound()
-
         requestAudioFocus()
 
         if (uriString.isNullOrBlank()) {
-            try {
-                tone = ToneGenerator(AudioManager.STREAM_MUSIC, 90).also {
-                    it.startTone(ToneGenerator.TONE_PROP_BEEP2, 260)
-                }
-            } catch (_: Exception) {
-                tone = null
-            }
+            playFallbackMelody()
             return
         }
 
@@ -335,6 +341,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
                             .build()
                     )
                     setVolume(1.0f, 1.0f)
+                    isLooping = loop
                     setDataSource(path)
                     prepare()
                 }
@@ -343,16 +350,23 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
                     ?: throw IllegalStateException("MediaPlayer.create returned null")
             }
 
+            mp.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
             mp.setVolume(1.0f, 1.0f)
+            mp.isLooping = loop
             mp.setOnCompletionListener { completed ->
                 if (player === completed) player = null
                 try { completed.release() } catch (_: Exception) { }
-                abandonAudioFocus()
+                if (!loop) abandonAudioFocus()
             }
             mp.setOnErrorListener { failed, _, _ ->
                 if (player === failed) player = null
                 try { failed.release() } catch (_: Exception) { }
-                abandonAudioFocus()
+                playFallbackMelody()
                 true
             }
 
@@ -360,15 +374,76 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
             mp.start()
         } catch (_: Exception) {
             player = null
-            // 自定义音频失败时仍给出系统提示音，保证用户能感知到触发。
+            playFallbackMelody()
+        }
+    }
+
+    private fun playFallbackMelody() {
+        stopMelodyOnly()
+        try {
+            val sampleRate = 22050
+            val notes = doubleArrayOf(523.25, 659.25, 783.99, 659.25, 587.33, 698.46, 880.0, 783.99)
+            val noteSamples = sampleRate / 5
+            val buffer = ShortArray(noteSamples * notes.size)
+
+            var pos = 0
+            for (freq in notes) {
+                for (i in 0 until noteSamples) {
+                    val t = i.toDouble() / sampleRate
+                    val attack = sampleRate * 0.02
+                    val release = sampleRate * 0.03
+                    val envelope = when {
+                        i < attack -> i / attack
+                        i > noteSamples - release -> (noteSamples - i) / release
+                        else -> 1.0
+                    }.coerceIn(0.0, 1.0)
+                    buffer[pos++] = (sin(2.0 * PI * freq * t) * 11000.0 * envelope).toInt().toShort()
+                }
+            }
+
+            val track = AudioTrack(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build(),
+                AudioFormat.Builder()
+                    .setSampleRate(sampleRate)
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build(),
+                buffer.size * 2,
+                AudioTrack.MODE_STATIC,
+                AudioManager.AUDIO_SESSION_ID_GENERATE
+            )
+
+            melodyTrack = track
+            track.setVolume(1.0f)
+            track.write(buffer, 0, buffer.size)
+            track.setNotificationMarkerPosition(buffer.size)
+            track.setPlaybackPositionUpdateListener(object : AudioTrack.OnPlaybackPositionUpdateListener {
+                override fun onMarkerReached(audioTrack: AudioTrack) {
+                    stopMelodyOnly()
+                    abandonAudioFocus()
+                }
+                override fun onPeriodicNotification(audioTrack: AudioTrack) = Unit
+            })
+            track.play()
+        } catch (_: Exception) {
+            melodyTrack = null
             try {
                 tone = ToneGenerator(AudioManager.STREAM_MUSIC, 90).also {
-                    it.startTone(ToneGenerator.TONE_PROP_BEEP2, 220)
+                    it.startTone(ToneGenerator.TONE_PROP_BEEP2, 500)
                 }
             } catch (_: Exception) {
                 tone = null
             }
         }
+    }
+
+    private fun stopMelodyOnly() {
+        try { melodyTrack?.stop() } catch (_: Exception) { }
+        try { melodyTrack?.release() } catch (_: Exception) { }
+        melodyTrack = null
     }
 
     private fun requestAudioFocus() {
@@ -416,6 +491,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         player = null
         try { tone?.release() } catch (_: Exception) { }
         tone = null
+        stopMelodyOnly()
         abandonAudioFocus()
     }
 
