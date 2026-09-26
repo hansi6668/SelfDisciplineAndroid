@@ -73,8 +73,20 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         val pkg = resolveEventPackage(event) ?: return
         val homePackage = resolveHomePackage()
 
-        // 拦截页出现期间保持锁定状态，不受任何系统窗口事件影响。
+        // 拦截状态下继续保护当前规则；如果悬浮层因 ROM/系统窗口异常消失，
+        // 用户再次点击该 App 时自动恢复拦截页和声音。
         if (protectedBlockPackage != null) {
+            if (pkg == protectedBlockPackage &&
+                (currentOverlay == null || !currentOverlay!!.isAttachedToWindow)) {
+
+                if (tempAllowedPackage == pkg && System.currentTimeMillis() < tempAllowedUntil) {
+                    return
+                }
+
+                showBlockingOverlay(pkg)
+                playSound(AppPrefs.blockSound(this), true)
+                performGlobalAction(GLOBAL_ACTION_HOME)
+            }
             return
         }
 
