@@ -24,6 +24,7 @@ import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import java.io.File
 import java.util.Locale
 
 class MainActivity : Activity() {
@@ -67,6 +68,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        SelfDisciplineAccessibilityService.stopCurrentPrompt()
         refreshUi()
     }
 
@@ -437,15 +439,40 @@ class MainActivity : Activity() {
         if (resultCode != RESULT_OK) return
         val uri = data?.data ?: return
         try { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) { }
+        val stored = copyAudioToPrivateStorage(uri, if (requestCode == pickBlockSound) "block" else "welcome")
+            ?: uri.toString()
+
         when (requestCode) {
-            pickBlockSound -> { AppPrefs.setBlockSound(this, uri.toString()); if (::blockSoundSummary.isInitialized) blockSoundSummary.text = soundName(uri.toString()) }
-            pickWelcomeSound -> { AppPrefs.setWelcomeSound(this, uri.toString()); if (::welcomeSoundSummary.isInitialized) welcomeSoundSummary.text = soundName(uri.toString()) }
+            pickBlockSound -> {
+                AppPrefs.setBlockSound(this, stored)
+                if (::blockSoundSummary.isInitialized) blockSoundSummary.text = soundName(stored)
+            }
+            pickWelcomeSound -> {
+                AppPrefs.setWelcomeSound(this, stored)
+                if (::welcomeSoundSummary.isInitialized) welcomeSoundSummary.text = soundName(stored)
+            }
         }
         toast("提示音已保存")
     }
 
+    private fun copyAudioToPrivateStorage(uri: Uri, key: String): String? {
+        return try {
+            val dest = File(filesDir, key + "_prompt_audio")
+            contentResolver.openInputStream(uri)?.use { input ->
+                dest.outputStream().use { output -> input.copyTo(output) }
+            } ?: return null
+            "file://" + dest.absolutePath
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun soundName(uriString: String?): String {
         if (uriString.isNullOrBlank()) return "未选择，使用系统短提示音"
+        if (uriString.startsWith("file://")) {
+            return File(Uri.parse(uriString).path ?: "").takeIf { it.exists() }?.let { "已保存自定义音频" }
+                ?: "自定义音频不可用"
+        }
         return try {
             contentResolver.query(Uri.parse(uriString), arrayOf("_display_name"), null, null, null)?.use { c ->
                 if (c.moveToFirst()) c.getString(0) else "已选择自定义音频"
