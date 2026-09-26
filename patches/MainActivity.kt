@@ -74,7 +74,7 @@ class MainActivity : Activity() {
 
     private fun buildUi() {
         val scroll = ScrollView(this).apply {
-            setBackgroundColor(background)
+            setBackgroundColor(this@MainActivity.background)
             overScrollMode = View.OVER_SCROLL_NEVER
             isFillViewport = true
         }
@@ -229,7 +229,7 @@ class MainActivity : Activity() {
     private fun appToolbar(): View {
         val outer = cardContainer().apply { setPadding(dp(12), dp(12), dp(12), dp(12)) }
         searchEdit = EditText(this).apply {
-            hint = "搜索应用名称"; hintTextColor = Color.rgb(155, 160, 170); textSize = 14f
+            hint = "搜索应用名称"; setHintTextColor(Color.rgb(155, 160, 170)); textSize = 14f
             setSingleLine(true); inputType = InputType.TYPE_CLASS_TEXT; setTextColor(textPrimary)
             setPadding(dp(14), dp(2), dp(14), dp(2)); background = rounded(Color.rgb(248, 249, 252), dp(15), softBorder)
         }
@@ -473,3 +473,5 @@ class MainActivity : Activity() {
         override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = changed()
         override fun afterTextChanged(s: android.text.Editable?) = Unit
     }
+
+}
