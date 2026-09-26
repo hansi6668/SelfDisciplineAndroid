@@ -70,12 +70,18 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        val pkg = resolveEventPackage(event) ?: return
+        val type = event?.eventType ?: return
+        if (type != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+            type != AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
+            return
+        }
+
+        val pkg = resolveForegroundPackage(event) ?: return
         val homePackage = resolveHomePackage()
 
-        // 拦截状态下继续保护当前规则；如果悬浮层因 ROM/系统窗口异常消失，
-        // 用户再次点击该 App 时自动恢复拦截页和声音。
+        // 拦截状态保持到用户主动点击按钮。
         if (protectedBlockPackage != null) {
+            // 如果 ROM 意外移除了悬浮层，目标 App 再次成为前台时自动恢复。
             if (pkg == protectedBlockPackage &&
                 (currentOverlay == null || !currentOverlay!!.isAttachedToWindow)) {
 
@@ -90,48 +96,65 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
             return
         }
 
-        // 本应用自己的 Activity / Accessibility Overlay 不参与前台判定。
-        if (pkg == packageName) {
+        // 本应用、桌面、SystemUI 不是目标 App。
+        if (isIgnoredPackage(pkg)) {
+            if (homePackage != null && pkg == homePackage) {
+                currentPackage = null
+                welcomedPackage = null
+            }
             return
         }
 
-        // 回到桌面表示真正离开目标 App；允许下次重新触发鼓励/拦截。
-        if (homePackage != null && pkg == homePackage) {
-            currentPackage = null
-            welcomedPackage = null
-            return
-        }
-
-        // Android/SystemUI 等短暂系统窗口不改变当前真实应用。
-        if (pkg == "android" ||
-            pkg == "com.android.systemui" ||
-            pkg == "com.google.android.permissioncontroller" ||
-            pkg == "com.android.permissioncontroller") {
-            return
-        }
-
-        // 同一个真实应用持续使用期间，只处理一次。
-        if (pkg == currentPackage) {
-            return
-        }
+        // 只有从一个真实 App 切换到另一个真实 App 时才触发。
+        if (pkg == currentPackage) return
 
         stopPromptNow()
         currentPackage = pkg
         evaluatePackage(pkg)
     }
 
+    private fun resolveForegroundPackage(event: AccessibilityEvent?): String? {
+        // 优先从当前活动/有焦点的可交互窗口获取真实前台包名。
+        try {
+            val active = getWindows()
+                .asSequence()
+                .filter { it.isActive || it.isFocused }
+                .sortedByDescending { if (it.isActive) 2 else 1 }
+                .mapNotNull { window ->
+                    try { window.root?.packageName?.toString() } catch (_: Exception) { null }
+                }
+                .firstOrNull { isUsableForegroundPackage(it) }
 
-    private fun resolveEventPackage(event: AccessibilityEvent?): String? {
-        val direct = event?.packageName?.toString()?.takeIf { it.isNotBlank() && it != "android" }
-        if (direct != null) return direct
-
-        return try {
-            rootInActiveWindow?.packageName?.toString()?.takeIf {
-                it.isNotBlank() && it != "android"
+            if (!active.isNullOrBlank()) {
+                return active
             }
         } catch (_: Exception) {
-            null
         }
+
+        // ROM 不提供窗口树时，退回 AccessibilityEvent 的 packageName。
+        val direct = event?.packageName?.toString()
+        return direct?.takeIf { isUsableForegroundPackage(it) }
+    }
+
+    private fun isUsableForegroundPackage(pkg: String): Boolean {
+        if (pkg.isBlank() || pkg == "android") return false
+        if (pkg == packageName) return false
+        if (pkg == "com.android.systemui") return false
+        if (pkg == "com.google.android.permissioncontroller") return false
+        if (pkg == "com.android.permissioncontroller") return false
+        val home = resolveHomePackage()
+        if (home != null && pkg == home) return false
+        return true
+    }
+
+    private fun isIgnoredPackage(pkg: String): Boolean {
+        if (pkg == packageName) return true
+        if (pkg == "android") return true
+        if (pkg == "com.android.systemui") return true
+        if (pkg == "com.google.android.permissioncontroller") return true
+        if (pkg == "com.android.permissioncontroller") return true
+        val home = resolveHomePackage()
+        return home != null && pkg == home
     }
 
     override fun onInterrupt() = Unit
