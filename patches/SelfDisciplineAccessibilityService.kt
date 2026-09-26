@@ -70,22 +70,34 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val pkg = resolveEventPackage(event) ?: return
+        val homePackage = resolveHomePackage()
 
-        // 拦截页出现后，任何系统窗口/桌面/内容变化都不能打掉拦截页。
+        // 拦截页显示期间保持锁定状态，不受 HOME、SystemUI 或其他事件影响。
         if (protectedBlockPackage != null) {
             return
         }
 
-        // 系统 UI、桌面和本应用自己的窗口不是“新的目标应用”。
-        if (isIgnoredPackage(pkg)) {
-            if (pkg == packageName) {
-                stopPromptNow()
-                currentPackage = pkg
-            }
+        // 本应用自己的 Activity / Accessibility Overlay 不参与前台应用判定。
+        if (pkg == packageName) {
             return
         }
 
-        // 同一个真实应用持续运行期间，只触发一次鼓励。
+        // 真正回到桌面，代表用户已经离开上一个目标应用。
+        // 这里只清空当前目标，不触发任何提示。
+        if (homePackage != null && pkg == homePackage) {
+            currentPackage = null
+            return
+        }
+
+        // 系统 UI、权限弹窗等短暂窗口不应该让目标应用失去“当前”状态。
+        if (pkg == "android" ||
+            pkg == "com.android.systemui" ||
+            pkg == "com.google.android.permissioncontroller" ||
+            pkg == "com.android.permissioncontroller") {
+            return
+        }
+
+        // 同一个真实应用持续运行期间，只处理第一次进入。
         if (pkg == currentPackage) {
             return
         }
@@ -93,13 +105,6 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         stopPromptNow()
         currentPackage = pkg
         evaluatePackage(pkg)
-    }
-
-    private fun isIgnoredPackage(pkg: String): Boolean {
-        if (pkg == packageName || pkg == "android" || pkg == "com.android.systemui") return true
-        if (pkg == "com.google.android.permissioncontroller" || pkg == "com.android.permissioncontroller") return true
-        val home = resolveHomePackage()
-        return home != null && pkg == home
     }
 
 
@@ -325,7 +330,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         requestAudioFocus()
 
         if (uriString.isNullOrBlank()) {
-            playFallbackMelody()
+            playFallbackMelody(loop)
             return
         }
 
@@ -366,7 +371,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
             mp.setOnErrorListener { failed, _, _ ->
                 if (player === failed) player = null
                 try { failed.release() } catch (_: Exception) { }
-                playFallbackMelody()
+                playFallbackMelody(loop)
                 true
             }
 
@@ -374,11 +379,11 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
             mp.start()
         } catch (_: Exception) {
             player = null
-            playFallbackMelody()
+            playFallbackMelody(loop)
         }
     }
 
-    private fun playFallbackMelody() {
+    private fun playFallbackMelody(loop: Boolean) {
         stopMelodyOnly()
         try {
             val sampleRate = 22050
@@ -419,14 +424,18 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
             melodyTrack = track
             track.setVolume(1.0f)
             track.write(buffer, 0, buffer.size)
-            track.setNotificationMarkerPosition(buffer.size)
-            track.setPlaybackPositionUpdateListener(object : AudioTrack.OnPlaybackPositionUpdateListener {
-                override fun onMarkerReached(audioTrack: AudioTrack) {
-                    stopMelodyOnly()
-                    abandonAudioFocus()
-                }
-                override fun onPeriodicNotification(audioTrack: AudioTrack) = Unit
-            })
+            if (loop) {
+                track.setLoopPoints(0, buffer.size, -1)
+            } else {
+                track.setNotificationMarkerPosition(buffer.size)
+                track.setPlaybackPositionUpdateListener(object : AudioTrack.OnPlaybackPositionUpdateListener {
+                    override fun onMarkerReached(audioTrack: AudioTrack) {
+                        stopMelodyOnly()
+                        abandonAudioFocus()
+                    }
+                    override fun onPeriodicNotification(audioTrack: AudioTrack) = Unit
+                })
+            }
             track.play()
         } catch (_: Exception) {
             melodyTrack = null
