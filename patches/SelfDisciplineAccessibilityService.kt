@@ -67,15 +67,22 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val pkg = event?.packageName?.toString() ?: detectForegroundPackage() ?: return
+        val now = System.currentTimeMillis()
 
-        // 自律一下自身的窗口事件只负责关闭当前提示，不得停止前台监测器。
+        // 拦截页本身属于本服务的 Accessibility Overlay，会产生 packageName=本应用的窗口事件。
+        // 拦截状态下绝不能因为这个事件调用 stopPromptNow()，否则会形成：
+        // 添加拦截页 -> 收到本应用事件 -> 删除拦截页 -> 再次检测目标 -> 再添加……
+        // 这正是“疯狂闪烁”的典型竞态。
         if (pkg == packageName) {
+            if (protectedBlockPackage != null && currentOverlay != null) {
+                currentPackage = protectedBlockPackage
+                lastEventAt = now
+                return
+            }
             stopPromptNow()
             currentPackage = pkg
             return
         }
-
-        val now = System.currentTimeMillis()
 
         // 已有拦截页时，同一目标应用产生的事件全部忽略，避免提示页被自己触发的事件清掉。
         if (protectedBlockPackage != null && pkg == protectedBlockPackage && currentOverlay != null) {
