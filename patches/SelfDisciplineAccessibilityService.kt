@@ -74,12 +74,14 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         // 添加拦截页 -> 收到本应用事件 -> 删除拦截页 -> 再次检测目标 -> 再添加……
         // 这正是“疯狂闪烁”的典型竞态。
         if (pkg == packageName) {
-            if (protectedBlockPackage != null && currentOverlay != null) {
+            // 本服务自己的窗口事件不能直接结束拦截会话。
+            // Accessibility Overlay 在 addView() 后本身就可能产生 packageName=本应用的事件；
+            // 如果这里调用 stopPromptNow()，会形成“刚添加就删除”的闪烁竞态。
+            if (protectedBlockPackage != null) {
                 currentPackage = protectedBlockPackage
                 lastEventAt = now
                 return
             }
-            stopPromptNow()
             currentPackage = pkg
             return
         }
@@ -116,16 +118,17 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
                     return
                 }
 
-                // 已经处于同一应用的拦截状态时，不重新创建 Overlay，也不重新播放音乐。
-                if (protectedBlockPackage == pkg && currentOverlay != null) return
+                // 一个目标应用对应一个完整的拦截会话。
+                // 会话期间即使无障碍事件连续到达，也不能重新创建页面或重新播放声音。
+                if (protectedBlockPackage == pkg) {
+                    if (currentOverlay == null) {
+                        showBlockingOverlay(pkg)
+                    }
+                    return
+                }
 
+                // 新目标应用，开启新的拦截会话。
                 protectedBlockPackage = pkg
-                if (currentOverlay != null) return
-                removeOverlay()
-                stopSound()
-
-                // 先建立全屏 Accessibility Overlay，再提示。
-                // 不主动执行 GLOBAL_ACTION_HOME，避免产生“刚弹出又被窗口事件清掉”的竞态。
                 showBlockingOverlay(pkg)
                 playSound(AppPrefs.blockSound(this))
             }
@@ -175,7 +178,8 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
     }
 
     private fun showBlockingOverlay(pkg: String) {
-        removeOverlay()
+        // 由 evaluatePackage() 保证同一拦截会话不会重复调用。
+        // 这里不再先 removeOverlay()，避免出现 remove -> add 的可见闪烁。
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -286,11 +290,15 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
             gravity = if (blocking) Gravity.CENTER else Gravity.TOP or Gravity.CENTER_HORIZONTAL
             y = if (blocking) 0 else dp(72)
         }
+        // 先登记 View，再调用 addView()。
+        // addView() 过程中系统可能立即产生 AccessibilityEvent；
+        // 若等 addView() 返回后才赋值，那个事件会看到 currentOverlay=null，
+        // 从而错误地触发下一轮拦截。
+        currentOverlay = view
         try {
             windowManager?.addView(view, params)
-            currentOverlay = view
         } catch (_: Exception) {
-            currentOverlay = null
+            if (currentOverlay === view) currentOverlay = null
         }
     }
 
