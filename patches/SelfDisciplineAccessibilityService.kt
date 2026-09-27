@@ -35,6 +35,22 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
     private var player: MediaPlayer? = null
     private var tone: ToneGenerator? = null
     private var protectedBlockPackage: String? = null
+    private val foregroundCheck = object : Runnable {
+        override fun run() {
+            try {
+                val pkg = detectForegroundPackage()
+                if (!pkg.isNullOrBlank() && pkg != packageName) {
+                    val mode = AppPrefs.mode(this@SelfDisciplineAccessibilityService, pkg)
+                    if (pkg != currentPackage || (mode == AppPrefs.Mode.BLOCK && currentOverlay == null)) {
+                        currentPackage = pkg
+                        lastEventAt = System.currentTimeMillis()
+                        evaluatePackage(pkg)
+                    }
+                }
+            } catch (_: Exception) { }
+            handler.postDelayed(this, 250)
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -45,10 +61,11 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         activeInstance = this
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        handler.post(foregroundCheck)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        val pkg = event?.packageName?.toString() ?: return
+        val pkg = event?.packageName?.toString() ?: detectForegroundPackage() ?: return
 
         // 用户主动打开“自律一下”时，立即关闭当前提示和音乐。
         if (pkg == packageName) {
@@ -67,16 +84,17 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         }
 
         // 同一个应用短时间内会连续收到多个无障碍事件，只处理一次。
-        if (pkg == currentPackage && now - lastEventAt < 100) return
+        if (pkg == currentPackage && now - lastEventAt < 100 && currentOverlay != null) return
 
         currentPackage = pkg
         lastEventAt = now
         evaluatePackage(pkg)
     }
 
-    override fun onInterrupt() = Unit
+    override fun onInterrupt() { handler.removeCallbacks(foregroundCheck) }
 
     override fun onDestroy() {
+        handler.removeCallbacks(foregroundCheck)
         stopPromptNow()
         if (activeInstance === this) activeInstance = null
         super.onDestroy()
@@ -91,6 +109,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
                 }
 
                 protectedBlockPackage = pkg
+                if (currentOverlay != null) return
                 removeOverlay()
                 stopSound()
 
@@ -105,6 +124,12 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
 
             AppPrefs.Mode.OFF -> stopPromptNow()
         }
+    }
+
+    private fun detectForegroundPackage(): String? {
+        try { rootInActiveWindow?.packageName?.toString()?.takeIf { it.isNotBlank() }?.let { return it } } catch (_: Exception) { }
+        try { windows.firstOrNull { it.isFocused || it.isActive }?.root?.packageName?.toString()?.takeIf { it.isNotBlank() }?.let { return it } } catch (_: Exception) { }
+        return null
     }
 
     private fun resolveHomePackage(): String? {
