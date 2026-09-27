@@ -25,7 +25,8 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         fun stopCurrentPrompt() { activeInstance?.stopPromptNow() }
     }
 
-    private val handler = Handler(Looper.getMainLooper())
+    private val monitorHandler = Handler(Looper.getMainLooper())
+    private val promptHandler = Handler(Looper.getMainLooper())
     private var windowManager: WindowManager? = null
     private var currentOverlay: View? = null
     private var currentPackage: String? = null
@@ -48,7 +49,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
                     }
                 }
             } catch (_: Exception) { }
-            handler.postDelayed(this, 250)
+            monitorHandler.postDelayed(this, 150)
         }
     }
 
@@ -61,13 +62,13 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         activeInstance = this
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        handler.post(foregroundCheck)
+        monitorHandler.post(foregroundCheck)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val pkg = event?.packageName?.toString() ?: detectForegroundPackage() ?: return
 
-        // 用户主动打开“自律一下”时，立即关闭当前提示和音乐。
+        // 自律一下自身的窗口事件只负责关闭当前提示，不得停止前台监测器。
         if (pkg == packageName) {
             stopPromptNow()
             currentPackage = pkg
@@ -75,26 +76,26 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
         }
 
         val now = System.currentTimeMillis()
-        val homePackage = resolveHomePackage()
 
-        // 拦截后执行 GLOBAL_ACTION_HOME 会产生桌面事件。
-        // 这个事件不能被当成“离开被拦截应用”，否则刚弹出的拦截页会立即消失。
-        if (protectedBlockPackage != null && pkg == homePackage) {
+        // 已有拦截页时，同一目标应用产生的事件全部忽略，避免提示页被自己触发的事件清掉。
+        if (protectedBlockPackage != null && pkg == protectedBlockPackage && currentOverlay != null) {
+            currentPackage = pkg
+            lastEventAt = now
             return
         }
 
         // 同一个应用短时间内会连续收到多个无障碍事件，只处理一次。
-        if (pkg == currentPackage && now - lastEventAt < 100 && currentOverlay != null) return
+        if (pkg == currentPackage && now - lastEventAt < 80 && currentOverlay != null) return
 
         currentPackage = pkg
         lastEventAt = now
         evaluatePackage(pkg)
     }
 
-    override fun onInterrupt() { handler.removeCallbacks(foregroundCheck) }
+    override fun onInterrupt() { monitorHandler.removeCallbacks(foregroundCheck) }
 
     override fun onDestroy() {
-        handler.removeCallbacks(foregroundCheck)
+        monitorHandler.removeCallbacks(foregroundCheck)
         stopPromptNow()
         if (activeInstance === this) activeInstance = null
         super.onDestroy()
@@ -113,11 +114,10 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
                 removeOverlay()
                 stopSound()
 
-                // 立即显示拦截页和声音，再把原应用送回桌面。
-                // 桌面事件会被 protectedBlockPackage 拦截掉，不会关闭提示。
+                // 先建立全屏 Accessibility Overlay，再提示。
+                // 不主动执行 GLOBAL_ACTION_HOME，避免产生“刚弹出又被窗口事件清掉”的竞态。
                 showBlockingOverlay(pkg)
                 playSound(AppPrefs.blockSound(this))
-                performGlobalAction(GLOBAL_ACTION_HOME)
             }
 
             AppPrefs.Mode.WELCOME -> stopPromptNow()
@@ -127,8 +127,27 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
     }
 
     private fun detectForegroundPackage(): String? {
-        try { rootInActiveWindow?.packageName?.toString()?.takeIf { it.isNotBlank() }?.let { return it } } catch (_: Exception) { }
-        try { windows.firstOrNull { it.isFocused || it.isActive }?.root?.packageName?.toString()?.takeIf { it.isNotBlank() }?.let { return it } } catch (_: Exception) { }
+        // 优先从真正的 APPLICATION window 中判断，避免全屏 Accessibility Overlay
+        // 被系统认为是当前窗口后，把检测结果误判成我们自己的包名。
+        try {
+            val appWindows = windows.filter {
+                try { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION } catch (_: Exception) { false }
+            }
+            val focused = appWindows.firstOrNull { it.isFocused || it.isActive }
+            val focusedPkg = focused?.root?.packageName?.toString()
+            if (!focusedPkg.isNullOrBlank() && focusedPkg != packageName) return focusedPkg
+
+            val anyPkg = appWindows.asSequence()
+                .mapNotNull { try { it.root?.packageName?.toString() } catch (_: Exception) { null } }
+                .firstOrNull { it.isNotBlank() && it != packageName }
+            if (!anyPkg.isNullOrBlank()) return anyPkg
+        } catch (_: Exception) { }
+
+        try {
+            val rootPkg = rootInActiveWindow?.packageName?.toString()
+            if (!rootPkg.isNullOrBlank() && rootPkg != packageName) return rootPkg
+        } catch (_: Exception) { }
+
         return null
     }
 
@@ -227,7 +246,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
             setPadding(dp(12), 0, 0, 0)
         }, LinearLayout.LayoutParams(0, -2, 1f))
         addOverlay(root, false)
-        handler.postDelayed({
+        promptHandler.postDelayed({
             removeOverlay()
             stopSound()
         }, 1800)
@@ -273,7 +292,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
     }
 
     private fun stopPromptNow() {
-        handler.removeCallbacksAndMessages(null)
+        promptHandler.removeCallbacksAndMessages(null)
         removeOverlay()
         stopSound()
         protectedBlockPackage = null
