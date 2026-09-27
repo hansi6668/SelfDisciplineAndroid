@@ -42,7 +42,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
                 val pkg = detectForegroundPackage()
                 if (!pkg.isNullOrBlank() && pkg != packageName) {
                     val mode = AppPrefs.mode(this@SelfDisciplineAccessibilityService, pkg)
-                    if (pkg != currentPackage || (mode == AppPrefs.Mode.BLOCK && currentOverlay == null)) {
+                    if (pkg != currentPackage || (mode == AppPrefs.Mode.BLOCK && currentOverlay == null && protectedBlockPackage != pkg)) {
                         currentPackage = pkg
                         lastEventAt = System.currentTimeMillis()
                         evaluatePackage(pkg)
@@ -115,6 +115,9 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
                     stopPromptNow()
                     return
                 }
+
+                // 已经处于同一应用的拦截状态时，不重新创建 Overlay，也不重新播放音乐。
+                if (protectedBlockPackage == pkg && currentOverlay != null) return
 
                 protectedBlockPackage = pkg
                 if (currentOverlay != null) return
