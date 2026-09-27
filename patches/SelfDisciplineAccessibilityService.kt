@@ -313,7 +313,7 @@ class SelfDisciplineAccessibilityService : AccessibilityService() {
                     it.startTone(ToneGenerator.TONE_PROP_BEEP2, 220)
                 }
                 val captured = tone
-                handler.postDelayed({
+                promptHandler.postDelayed({
                     if (tone === captured) {
                         try { captured?.release() } catch (_: Exception) { }
                         tone = null
